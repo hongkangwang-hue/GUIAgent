@@ -1,0 +1,26 @@
+[project]
+name = "gui-agent"
+version = "0.1.0"
+description = "基于多模态大模型的桌面 GUI 智能体"
+requires-python = ">=3.10"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "windows: 需要真实 Windows 桌面，CI 上跳过",
+    "gpu: 需要可用 GPU",
+    "slow: 耗时较长（OCR 推理等）",
+]
+
+[tool.coverage.run]
+source = ["perception", "control"]
+omit = ["*/__init__.py"]

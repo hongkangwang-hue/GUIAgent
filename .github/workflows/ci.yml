@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  test:
+    # 用 Windows runner：本项目的感知与控制是 Windows 专有的（uiautomation、
+    # DPI 感知、dxcam），在 ubuntu 上连导入都过不去。
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: 安装依赖
+        # 只装单元测试跑得到的那部分。torch / paddleocr / easyocr 加起来
+        # 几个 GB，而单元测试全程用假引擎、不加载真实 OCR 模型，装了纯属
+        # 浪费 CI 时间。真实模型的可用性由本地的 env_check.py 负责。
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy pillow opencv-python mss pyautogui pynput pyperclip uiautomation dxcam
+          pip install pytest pytest-cov ruff rich
+
+      - name: Lint
+        run: ruff check .
+
+      - name: 单元测试
+        # CI runner 没有真实桌面（无交互式会话），跳过标 windows 的用例。
+        # 那部分由虚拟机内的 scripts/verify_control.py 人工验证覆盖 ——
+        # CI 覆盖不到的正是风险最高的那一半，这一点必须清楚。
+        run: pytest tests/ -q -m "not windows" --cov=perception --cov=control --cov-report=term
+
+      - name: 覆盖率门槛
+        # M1 交付要求覆盖率不低于 60%
+        run: pytest tests/ -q -m "not windows" --cov=perception --cov=control --cov-fail-under=60
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 检查仓库内无凭据
+        shell: bash
+        run: |
+          if git ls-files --error-unmatch .env 2>/dev/null; then
+            echo "::error::.env 被提交进仓库了"
+            exit 1
+          fi
+          # 常见 key 前缀的粗筛。误报好过漏报——真漏了清理 git 历史很麻烦
+          if git grep -nIE '(sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16})' -- ':!*.lock' ':!.github/*'; then
+            echo "::error::疑似 API Key 硬编码在代码里"
+            exit 1
+          fi
+          echo "未发现凭据"

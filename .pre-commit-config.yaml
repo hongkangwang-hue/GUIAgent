@@ -1,0 +1,37 @@
+# pre-commit install 之后每次提交自动跑。
+# 只放**快**的检查——慢的会让人养成 --no-verify 的习惯，那就白装了。
+# 测试不放这里，交给 CI。
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      # 防止误提交大文件（模型权重、数据集、截图）
+      - id: check-added-large-files
+        args: [--maxkb=2048]
+      # 最后一道防线：拦住 AWS 之类的私钥。API Key 靠 .gitignore + detect-secrets 另说
+      - id: detect-private-key
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.6
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      # .env 一旦进过 git 历史，清理非常麻烦。这条比 .gitignore 更硬：
+      # .gitignore 只防"没被跟踪的文件"，挡不住 git add -f
+      - id: no-env-file
+        name: 禁止提交 .env
+        entry: 检测到 .env 被加入提交，仓库内不得出现任何真实凭据
+        language: fail
+        files: '^\.env$'

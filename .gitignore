@@ -1,0 +1,44 @@
+# 凭据 —— 绝不入库
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# 数据与产物（体积大 / 含截图，不入库）
+data/
+logs/
+outputs/
+*.pth
+*.safetensors
+*.bin
+
+# 第三方材料，不随本仓库分发
+# - 实习方的项目大纲：对方的材料，不是本项目的产出
+# - arXiv 论文：受版权保护，且共 18MB。引用写链接即可
+*.pdf
+milestone/大模型_AI_Agent_项目大纲*.md
+milestone/revision-brief.html
+
+# 个人交付草稿（Word），不进公开仓库
+*.docx
+*.doc
+
+# 环境
+.venv/
+venv/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 系统
+Thumbs.db
+desktop.ini
+.DS_Store
