@@ -13,7 +13,14 @@ import pytest
 from perception.capture import CaptureError, ScreenCapturer, Screenshot
 from perception.types import BBox
 
-windows_only = pytest.mark.skipif(sys.platform != "win32", reason="需要 Windows 桌面")
+#: 两个标记都要打，作用不同，缺一个就会出问题：
+#: - `skipif` 让本地在非 Windows 上自动跳过
+#: - `windows` 是自定义标记，供 CI 用 `-m "not windows"` 主动排除
+#: 只打 skipif 的话，CI 的过滤是一句空话——这正是最初的写法，230 个测试
+#: 一个都没被排除掉。
+windows_only = pytest.mark.windows(
+    pytest.mark.skipif(sys.platform != "win32", reason="需要 Windows 桌面")
+)
 
 
 # --------------------------------------------------------------------- #

@@ -270,7 +270,8 @@ def check_gpu(report: Report) -> None:
 
     name = torch.cuda.get_device_name(0)
     capability = torch.cuda.get_device_capability(0)
-    arch_list = torch.get_arch_list()
+    # 注意是 torch.cuda.get_arch_list()，不是 torch.get_arch_list()——后者不存在
+    arch_list = torch.cuda.get_arch_list()
     arch_tag = f"sm_{capability[0]}{capability[1]}"
 
     # 三重判据：算力标签、构建是否含该算力、以及真的跑一次运算。
