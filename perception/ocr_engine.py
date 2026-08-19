@@ -205,11 +205,16 @@ class PaddleOCREngine(OCREngine):
         """解析 PaddleOCR 输出。
 
         2.x 返回 ``[[ [poly, (text, conf)], ... ]]``（外层按图分组），
-        某些版本在无结果时返回 ``[None]``。这里都当成异常形状兜住——
-        OCR 库的输出格式在版本间变过好几次，写死一种解析必然踩雷。
+        某些版本在无结果时返回 ``[None]``。3.x 改成按图返回一个带
+        ``rec_texts`` / ``rec_polys`` / ``rec_scores`` 三个等长列表的
+        映射。这里都当成异常形状兜住——OCR 库的输出格式在版本间变过
+        好几次，写死一种解析必然踩雷。
         """
         if not raw:
             return []
+
+        if hasattr(raw[0], "keys"):
+            return PaddleOCREngine._parse_v3(raw[0])
 
         lines = raw[0] if isinstance(raw[0], list) or raw[0] is None else raw
         if not lines:
@@ -221,12 +226,43 @@ class PaddleOCREngine(OCREngine):
                 polygon, (text, confidence) = line[0], line[1]
                 bbox, poly = OCREngine._bbox_from_polygon(polygon)
                 results.append(
-                    OCRResult(
-                        text=str(text), bbox=bbox, confidence=float(confidence), polygon=poly
-                    )
+                    OCRResult(text=str(text), bbox=bbox, confidence=float(confidence), polygon=poly)
                 )
             except (TypeError, ValueError, IndexError) as exc:
                 logger.debug("跳过无法解析的 PaddleOCR 结果 %r：%s", line, exc)
+        return results
+
+    @staticmethod
+    def _parse_v3(page) -> list[OCRResult]:
+        """解析 PaddleOCR 3.x 的按图映射输出。
+
+        ``rec_polys`` 在纯识别（无检测框）场景下可能缺失，此时退回
+        ``rec_boxes`` 的两点矩形。
+        """
+        texts = page.get("rec_texts") or []
+        scores = page.get("rec_scores") or []
+        polys = page.get("rec_polys")
+        if polys is None:
+            polys = page.get("rec_boxes") or []
+
+        results: list[OCRResult] = []
+        for index, text in enumerate(texts):
+            try:
+                points = polys[index]
+                if len(points) == 4 and not hasattr(points[0], "__len__"):
+                    left, top, right, bottom = (int(v) for v in points)
+                    points = [(left, top), (right, top), (right, bottom), (left, bottom)]
+                bbox, polygon = OCREngine._bbox_from_polygon(points)
+                results.append(
+                    OCRResult(
+                        text=str(text),
+                        bbox=bbox,
+                        confidence=float(scores[index]),
+                        polygon=polygon,
+                    )
+                )
+            except (TypeError, ValueError, IndexError) as exc:
+                logger.debug("跳过无法解析的 PaddleOCR 3.x 结果 %r：%s", text, exc)
         return results
 
 
