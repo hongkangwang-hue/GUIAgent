@@ -4,6 +4,10 @@ version = "0.1.0"
 description = "基于多模态大模型的桌面 GUI 智能体"
 requires-python = ">=3.10"
 
+[project.scripts]
+# 装成命令：pip install -e . 之后可直接 `gui-agent run "打开记事本"`
+gui-agent = "cli.main:main"
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"
@@ -11,6 +15,11 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 ignore = ["E501"]
+
+[tool.ruff.lint.flake8-bugbear]
+# typer 的设计就是把 Option/Argument 的调用结果当默认值，B008 在这里是
+# 误报。声明它们为"不可变调用"，比在每个命令函数上撒 noqa 干净得多。
+extend-immutable-calls = ["typer.Option", "typer.Argument"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

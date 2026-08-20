@@ -101,10 +101,15 @@ def test_system_prompt_injects_action_reference() -> None:
     assert "left_click" in rendered
 
 
-def test_system_prompt_states_canvas_size() -> None:
-    """不告诉模型画布多大，它不知道坐标该落在什么范围。"""
-    rendered = load_template("executor_v1").render_system(width=1024, height=768)
-    assert "1024×768" in rendered
+def test_system_prompt_states_coordinate_range() -> None:
+    """提示词里说的必须是**坐标系**范围，不是图片尺寸。
+
+    实测 qwen3-vl 输出的是归一化到 [0,1000) 的坐标，与我们送多大的图无关。
+    告诉它"截图是 1024×768"会误导——它按哪把尺子作答，就该告诉它那把尺子。
+    """
+    rendered = load_template("executor_v1").render_system(width=1000, height=1000)
+    assert "[0, 1000)" in rendered
+    assert "无论截图实际多大" in rendered
 
 
 def test_json_braces_in_template_survive_rendering() -> None:

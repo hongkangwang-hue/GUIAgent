@@ -58,10 +58,31 @@ class SessionConfig:
     #: 拆解时给不给模型看当前屏幕
     plan_with_screenshot: bool = True
 
-    #: 模型坐标系的名字与尺寸。**必须与 CoordinateScaler 注册的一致**，
-    #: 否则模型在一个尺寸里作答、坐标按另一个尺寸反算，每次点击都偏
     space_name: str = "planner"
+
+    #: **送给模型的图片尺寸**。只影响上传字节数与视觉 token 数，
+    #: 不影响坐标解释
     image_size: tuple[int, int] = (1024, 768)
+
+    #: **模型作答所用的坐标系**。与 image_size 是两回事，这一点是实测出来的。
+    #:
+    #: 实验：同一张 2560×1600 桌面截图问"点任务栏开始按钮"，分别告诉模型
+    #: 画布是 1024×768 和 1024×640，各 4 次——
+    #:
+    #:     告诉它 768 高 → y = 968, 968, 970, 963
+    #:     告诉它 640 高 → y = 973, 967, 967, 970
+    #:
+    #: **y 完全不随声明的高度变化**，恒在 968 上下。968/1000 = 96.8%，
+    #: 正是任务栏在 1600 高屏幕上的位置。结论：qwen3-vl 输出的是归一化到
+    #: [0,1000) 的坐标，各轴独立，与我们送多大的图无关。
+    #:
+    #: 把两者当成同一个东西，后果是每次点击都系统性偏移——而且偏移量随
+    #: 目标在屏幕上的位置变化，看起来极像"模型定位不准"。M1 的
+    #: `CoordinateScaler` 文档里其实预留过这一条（"Qwen2.5-VL 归一化输出"）。
+    #:
+    #: 输出图像像素坐标的模型（部分 Qwen2.5-VL 版本）应改成与 image_size
+    #: 一致。M3 接新后端时这是**第一件要实测确认的事**。
+    coordinate_space: tuple[int, int] = (1000, 1000)
 
     loop: LoopConfig = field(default_factory=LoopConfig)
     context: ContextPolicy = field(default_factory=ContextPolicy)
@@ -80,6 +101,7 @@ class SessionConfig:
             "plan_with_screenshot": self.plan_with_screenshot,
             "space_name": self.space_name,
             "image_size": list(self.image_size),
+            "coordinate_space": list(self.coordinate_space),
             "max_iterations": self.loop.max_iterations,
             "cost_limit_cny": self.loop.cost_limit_cny,
             "settle_seconds": self.loop.settle_seconds,
@@ -176,6 +198,7 @@ class Session:
         config: SessionConfig | None = None,
         trajectory_root: Path | str = DEFAULT_ROOT,
         on_step=None,
+        on_subtask=None,
     ) -> None:
         self.backend = backend
         self.grounding = grounding
@@ -183,8 +206,10 @@ class Session:
         self.capturer = capturer
         self.config = config or SessionConfig()
         self.trajectory_root = trajectory_root
-        #: 每步执行完的回调，CLI 用它刷新实时面板
+        #: 每**步**执行完的回调（收到 StepRecord），CLI 的实时面板用它
         self.on_step = on_step
+        #: 每个**子任务**结束的回调（收到 SubtaskOutcome）
+        self.on_subtask = on_subtask
 
         self.executor_template: PromptTemplate = load_template(self.config.executor_template)
         self.planner_template: PromptTemplate = load_template(self.config.planner_template)
@@ -214,10 +239,11 @@ class Session:
             )
             return
 
-        if (space.width, space.height) != tuple(self.config.image_size):
+        if (space.width, space.height) != tuple(self.config.coordinate_space):
             logger.error(
-                "送模型的图是 %s，而坐标系 %r 是 %d×%d —— 两者必须一致，否则每次点击都会系统性偏移",
-                self.config.image_size,
+                "模型作答坐标系是 %s，而 CoordinateScaler 里注册的 %r 是 %d×%d —— "
+                "两者必须一致，否则每次点击都会系统性偏移",
+                self.config.coordinate_space,
                 self.config.space_name,
                 space.width,
                 space.height,
@@ -230,7 +256,9 @@ class Session:
         坐标系多大、不知道该输出什么格式，只能靠猜。之前各层单测都过而
         端到端跑不通，缺的就是这里。
         """
-        width, height = self.config.image_size
+        # 提示词里说的尺寸必须是**坐标系**的尺寸，不是图片的尺寸——
+        # 模型要按哪把尺子作答，就告诉它那把尺子
+        width, height = self.config.coordinate_space
         self.backend.system_prompt = self.executor_template.render_system(
             width=width, height=height
         )
@@ -312,6 +340,7 @@ class Session:
             writer=writer,
             config=self.config.loop,
             history_selector=self.conversation.window.select_steps,
+            on_step=self.on_step,
         )
         loop.history = self.conversation.steps  # 共用同一份，便于按子任务清空
 
@@ -326,8 +355,8 @@ class Session:
                 result=loop.run_subtask(subtask.goal, subtask_id=subtask.id),
             )
             result.outcomes.append(outcome)
-            if self.on_step:
-                self.on_step(outcome)
+            if self.on_subtask:
+                self.on_subtask(outcome)
 
             if not outcome.succeeded:
                 # GUI 操作有强顺序依赖，前一步没成往下走全是无效点击

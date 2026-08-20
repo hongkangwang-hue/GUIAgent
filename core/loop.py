@@ -166,6 +166,7 @@ class AgentLoop:
         writer: TrajectoryWriter | None = None,
         config: LoopConfig | None = None,
         history_selector: Callable[[list[HistoryStep]], list[HistoryStep]] | None = None,
+        on_step: Callable[[StepRecord], None] | None = None,
     ) -> None:
         self.llm = llm
         self.grounding = grounding
@@ -183,6 +184,10 @@ class AgentLoop:
         #: 策略是 M3 要做消融的变量，让它从外面进来，Loop 自己只保留一个
         #: 够用的默认实现（简单切片）。
         self.history_selector = history_selector
+
+        #: 每步落盘后触发，CLI 用它刷新实时面板。
+        #: 回调抛异常不影响任务——显示层的问题不该把正在执行的任务带崩
+        self.on_step = on_step
 
     # ------------------------------------------------------------------ #
 
@@ -477,6 +482,11 @@ class AgentLoop:
     def _commit(self, record: StepRecord) -> StepRecord:
         if self.writer:
             self.writer.append(record)
+        if self.on_step:
+            try:
+                self.on_step(record)
+            except Exception:  # noqa: BLE001 - 显示层不该拖垮执行层
+                logger.warning("on_step 回调出错，已忽略", exc_info=True)
         return record
 
     def _stop(self, result: LoopResult, status: str, reason: str) -> LoopResult:

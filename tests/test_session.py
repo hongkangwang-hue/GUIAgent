@@ -25,7 +25,9 @@ from perception.coordinate import CoordinateScaler
 from perception.types import BBox
 
 SCREEN = BBox(0, 0, 2560, 1600)
-MODEL_W, MODEL_H = 1024, 768
+#: 模型作答的坐标系。与"送多大的图"是两回事——实测 qwen3-vl 用归一化
+#: [0,1000)，见 SessionConfig.coordinate_space 的记录
+MODEL_W, MODEL_H = 1000, 1000
 
 PLAN_TWO = (
     '{"subtasks":[{"id":1,"goal":"点击开始按钮","expected":"菜单展开"},'
@@ -51,7 +53,9 @@ def _no_settle(monkeypatch):
     monkeypatch.setattr("core.loop.time.sleep", lambda _seconds: None)
 
 
-def build(script, tmp_path, config=None, model_size=(MODEL_W, MODEL_H), on_step=None):
+def build(script, tmp_path, config=None, model_size=None, on_step=None, on_subtask=None):
+    config = config or SessionConfig(loop=LoopConfig(max_iterations=4, save_frames=False))
+    model_size = model_size or config.coordinate_space
     scaler = CoordinateScaler(SCREEN)
     scaler.register("planner", *model_size)
     executor = ActionExecutor(scaler, space_name="planner", dry_run=True)
@@ -61,9 +65,10 @@ def build(script, tmp_path, config=None, model_size=(MODEL_W, MODEL_H), on_step=
         NativeGrounding(*model_size),
         executor,
         FakeCapturer(),
-        config=config or SessionConfig(loop=LoopConfig(max_iterations=4, save_frames=False)),
+        config=config,
         trajectory_root=tmp_path,
         on_step=on_step,
+        on_subtask=on_subtask,
     )
     return session, backend
 
@@ -119,7 +124,7 @@ def test_executor_prompt_is_injected(tmp_path) -> None:
     session.run("打开记事本")
 
     assert "left_click" in backend.system_prompt
-    assert f"{MODEL_W}×{MODEL_H}" in backend.system_prompt
+    assert f"[0, {MODEL_W})" in backend.system_prompt
     assert len(backend.few_shot) >= 2
 
 
@@ -138,13 +143,25 @@ def test_planner_prompt_is_restored_before_execution(tmp_path) -> None:
     assert "拆成一串" not in backend.system_prompt
 
 
-def test_image_size_pushed_to_backend(tmp_path) -> None:
+def test_coordinate_space_is_independent_of_image_size(tmp_path) -> None:
+    """送多大的图与模型按什么坐标系作答，是两件事。
+
+    这是实测结论：同一张图分别声明画布 1024×768 与 1024×640，qwen3-vl
+    给出的 y 都在 968 上下不变——它用的是自己的归一化空间。把两者当成
+    同一个东西，每次点击都会系统性偏移。
+    """
     config = SessionConfig(
-        loop=LoopConfig(max_iterations=4, save_frames=False), image_size=(800, 600)
+        loop=LoopConfig(max_iterations=4, save_frames=False),
+        image_size=(800, 600),
+        coordinate_space=(1000, 1000),
     )
-    session, backend = build(two_subtask_script(), tmp_path, config=config, model_size=(800, 600))
+    session, backend = build(two_subtask_script(), tmp_path, config=config)
     session.run("x")
-    assert backend.image_size == (800, 600) if hasattr(backend, "image_size") else True
+
+    # 提示词说的是坐标系（1000），不是图片尺寸（800×600）
+    assert "[0, 1000)" in backend.system_prompt
+    assert "800" not in backend.system_prompt
+    assert session.config.image_size == (800, 600)
 
 
 def test_coordinate_space_mismatch_is_reported(tmp_path, caplog) -> None:
@@ -154,13 +171,13 @@ def test_coordinate_space_mismatch_is_reported(tmp_path, caplog) -> None:
     错配。开工时喊一声，比事后对着一堆偏移量猜便宜得多。
     """
     scaler = CoordinateScaler(SCREEN)
-    scaler.register("planner", 1280, 800)  # 与 image_size 的 1024×768 不符
+    scaler.register("planner", 1280, 800)  # 与默认 coordinate_space 的 1000×1000 不符
     executor = ActionExecutor(scaler, space_name="planner", dry_run=True)
 
     with caplog.at_level("ERROR"):
         Session(
             ScriptedBackend([]),
-            NativeGrounding(1024, 768),
+            NativeGrounding(1000, 1000),
             executor,
             FakeCapturer(),
             trajectory_root=tmp_path,
@@ -170,13 +187,13 @@ def test_coordinate_space_mismatch_is_reported(tmp_path, caplog) -> None:
 
 def test_unregistered_space_is_reported(tmp_path, caplog) -> None:
     scaler = CoordinateScaler(SCREEN)
-    scaler.register("其他坐标系", 1024, 768)
+    scaler.register("其他坐标系", 1000, 1000)
     executor = ActionExecutor(scaler, space_name="planner", dry_run=True)
 
     with caplog.at_level("ERROR"):
         Session(
             ScriptedBackend([]),
-            NativeGrounding(1024, 768),
+            NativeGrounding(1000, 1000),
             executor,
             FakeCapturer(),
             trajectory_root=tmp_path,
@@ -315,12 +332,29 @@ def test_cost_accumulated_across_plan_and_execution(tmp_path) -> None:
     assert result.cost.requests == 5
 
 
-def test_on_step_callback_fires(tmp_path) -> None:
-    """CLI 靠它刷新实时面板。"""
+def test_on_subtask_callback_fires(tmp_path) -> None:
+    seen = []
+    session, _ = build(two_subtask_script(), tmp_path, on_subtask=seen.append)
+    session.run("打开记事本")
+    assert [o.id for o in seen] == [1, 2]
+
+
+def test_on_step_callback_fires_per_step(tmp_path) -> None:
+    """实时面板要的是每步刷新，不是每个子任务刷新一次。"""
     seen = []
     session, _ = build(two_subtask_script(), tmp_path, on_step=seen.append)
     session.run("打开记事本")
-    assert [o.id for o in seen] == [1, 2]
+    assert [r.step for r in seen] == [1, 2, 3, 4]
+
+
+def test_panel_callback_failure_does_not_kill_the_task(tmp_path) -> None:
+    """显示层的问题不该把正在执行的任务带崩。"""
+
+    def boom(_record):
+        raise RuntimeError("面板炸了")
+
+    session, _ = build(two_subtask_script(), tmp_path, on_step=boom)
+    assert session.run("打开记事本").status == "completed"
 
 
 def test_result_as_dict_is_serializable(tmp_path) -> None:
