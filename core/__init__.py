@@ -4,6 +4,7 @@
 执行器 → 回传截图。`trajectory` 负责把这一路上发生的一切记下来。
 """
 
+from core.loop import AgentLoop, LoopConfig, LoopResult
 from core.trajectory import (
     ERROR_LABELS,
     LatencyBreakdown,
@@ -17,6 +18,9 @@ from core.trajectory import (
 
 __all__ = [
     "ERROR_LABELS",
+    "AgentLoop",
+    "LoopConfig",
+    "LoopResult",
     "LatencyBreakdown",
     "StepRecord",
     "TrajectoryMeta",

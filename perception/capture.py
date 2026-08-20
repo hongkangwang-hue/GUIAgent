@@ -76,10 +76,28 @@ class Screenshot:
 
         return Image.fromarray(self.image[:, :, ::-1])
 
-    def save(self, path: str) -> None:
+    def save(self, path: str) -> str:
+        """存盘。返回实际写入的路径。
+
+        **不用裸 `cv2.imwrite`**：它在中文路径下会静默失败——不抛异常、
+        不报错，只是不写文件。Agent Loop 每步要存前后两帧，踩上这个就是
+        整条轨迹一张图都没有，而且要等到回放时才发现。
+
+        绕法与 `perception.visualizer.save_annotated` 一致：先 imencode
+        到内存再用 Python 的文件对象写出去。
+        """
+        import os
+
         import cv2
 
-        cv2.imwrite(path, self.image)
+        directory = os.path.dirname(os.path.abspath(path))
+        os.makedirs(directory, exist_ok=True)
+        ok, buffer = cv2.imencode(os.path.splitext(path)[1] or ".png", self.image)
+        if not ok:
+            raise RuntimeError(f"编码截图失败：{path}")
+        with open(path, "wb") as handle:
+            handle.write(buffer.tobytes())
+        return path
 
     def resize_to(self, width: int, height: int) -> np.ndarray:
         """缩放到模型画布尺寸。
@@ -89,7 +107,9 @@ class Screenshot:
         """
         import cv2
 
-        interp = cv2.INTER_AREA if (width < self.width or height < self.height) else cv2.INTER_LINEAR
+        interp = (
+            cv2.INTER_AREA if (width < self.width or height < self.height) else cv2.INTER_LINEAR
+        )
         return cv2.resize(self.image, (width, height), interpolation=interp)
 
 

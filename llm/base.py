@@ -210,13 +210,12 @@ class ActionIntent:
     latency_ms: float = 0.0
 
     @property
-    def needs_grounding(self) -> bool:
-        """是否需要 grounding 补坐标。
+    def requires_point(self) -> bool:
+        """这个**动作类型**是否涉及坐标——与坐标在不在无关。
 
-        判据是"该动作要坐标但还没有坐标"，**不是"当前配的是模式 A 还是 B"**
-        ——模式 A 的模型偶尔也会漏给坐标，那种情况同样该走 grounding 兜底，
-        而不是让 `Action.validate` 崩掉。判据绑在数据上而非配置上，才能兜住
-        这类模型不听话的情形。
+        `left_click` 恒为 True（哪怕模型忘了给 x/y），`type` / `wait` 恒为
+        False。Loop 用它决定要不要走 grounding 这一步：不涉及坐标的动作
+        根本不该去打扰定位后端。
         """
         if self.done or not self.action_type:
             return False
@@ -224,7 +223,18 @@ class ActionIntent:
             probe = Action(type=self.action_type, x=0, y=0)
         except Exception:  # noqa: BLE001 - 未知动作类型，留给 to_action 报错
             return False
-        if not probe.requires_coordinates():
+        return probe.requires_coordinates()
+
+    @property
+    def needs_grounding(self) -> bool:
+        """是否**缺**坐标、需要 grounding 补上。
+
+        判据是"该动作要坐标但还没有坐标"，**不是"当前配的是模式 A 还是 B"**
+        ——模式 A 的模型偶尔也会漏给坐标，那种情况同样该走 grounding 兜底，
+        而不是让 `Action.validate` 崩掉。判据绑在数据上而非配置上，才能兜住
+        这类模型不听话的情形。
+        """
+        if not self.requires_point:
             return False
         return self.params.get("x") is None or self.params.get("y") is None
 
