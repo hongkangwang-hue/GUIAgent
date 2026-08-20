@@ -42,13 +42,12 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from llm.base import (
-    ActionIntent,
     HistoryStep,
     LLMBackend,
     LLMBackendError,
+    RawResponse,
     TokenUsage,
 )
-from llm.parsing import OutputParseError, parse_action_payload
 from llm.providers import ProviderConfig, resolve
 
 if TYPE_CHECKING:  # pragma: no cover - 仅供类型检查
@@ -285,14 +284,14 @@ class OpenAICompatBackend(LLMBackend):
 
     # ------------------------------------------------------------------ #
 
-    def predict_action(
+    def complete(
         self,
-        instruction: str,
-        screenshot: Screenshot,
+        prompt: str,
+        screenshot: Screenshot | None = None,
         history: list[HistoryStep] | None = None,
-    ) -> ActionIntent:
+    ) -> RawResponse:
         client = self._ensure_client()
-        messages = self.build_messages(instruction, screenshot, history or [])
+        messages = self.build_messages(prompt, screenshot, history or [])
 
         start = time.perf_counter()
         try:
@@ -308,22 +307,12 @@ class OpenAICompatBackend(LLMBackend):
 
         text = _response_text(response)
         usage = _extract_usage(response)
+        # **用量在解析之前就记账。** 调用已经发生、钱已经花了，只在成功
+        # 路径计费会让实测成本偏低，而成本实测是 M2 的交付物
         cost = self.record_usage(usage)
 
-        try:
-            payload = parse_action_payload(text)
-        except OutputParseError as exc:
-            # **解析失败要带着原文抛。** 没有原文就没法判断是模型的问题
-            # 还是解析层的问题，而这正是 M3 比较各模型格式稳定性的依据
-            raise LLMBackendError(
-                f"模型输出无法解析：{exc}",
-                retryable=True,
-                kind="parse_error",
-            ) from exc
-
-        return ActionIntent(
-            **payload,
-            raw_text=text,
+        return RawResponse(
+            text=text,
             usage=usage,
             cost_cny=cost,
             request_id=_request_id(response),

@@ -25,7 +25,14 @@ import itertools
 import logging
 from typing import TYPE_CHECKING
 
-from llm.base import ActionIntent, HistoryStep, LLMBackend, LLMBackendError, TokenUsage
+from llm.base import (
+    ActionIntent,
+    HistoryStep,
+    LLMBackend,
+    LLMBackendError,
+    RawResponse,
+    TokenUsage,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - 仅供类型检查
     from perception.capture import Screenshot
@@ -69,10 +76,30 @@ class ScriptedBackend(LLMBackend):
 
     # ------------------------------------------------------------------ #
 
+    def complete(
+        self,
+        prompt: str,
+        screenshot: Screenshot | None = None,
+        history: list[HistoryStep] | None = None,
+    ) -> RawResponse:
+        """返回脚本里的 ``raw_text``。
+
+        Planner 走的是这条路（它要的是原始文本，不是动作），因此脚本条目
+        里可以直接放 ``{"raw_text": '{"subtasks": [...]}'}``。
+        """
+        intent = self.predict_action(prompt, screenshot, history)
+        return RawResponse(
+            text=intent.raw_text,
+            usage=intent.usage,
+            cost_cny=intent.cost_cny,
+            request_id=intent.request_id,
+            latency_ms=intent.latency_ms,
+        )
+
     def predict_action(
         self,
         instruction: str,
-        screenshot: Screenshot,
+        screenshot: Screenshot | None = None,
         history: list[HistoryStep] | None = None,
     ) -> ActionIntent:
         index = next(self._cursor)

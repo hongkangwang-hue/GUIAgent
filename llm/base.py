@@ -279,6 +279,41 @@ class ActionIntent:
 
 
 @dataclass
+class RawResponse:
+    """一次调用的原始产物：还没被解释成任何东西的文本 + 记账信息。
+
+    ## 为什么要有这一层
+
+    最初 `LLMBackend` 只有 `predict_action`，它发请求并**顺手把回复解析
+    成动作**。Planner 借它做任务拆解时立刻炸了：模型正确返回了
+    ``{"subtasks": [...]}``，却因为没有 ``action`` 字段被判"无法解析"。
+
+    根因是把两件事焊在了一起——"发请求"和"按动作解析"。规划、动作决策、
+    M3 的提示词消融、grounding 的坐标提取，都是"发请求"，但各自的解析
+    规则完全不同。
+
+    因此 `complete` 是原语（每个后端只需实现它），`predict_action` 退化
+    成"complete + 按动作解析"的组合。副作用是动作解析从各后端里收归基类，
+    M3 加本地后端时不用再抄一遍。
+    """
+
+    text: str = ""
+    usage: TokenUsage = field(default_factory=TokenUsage)
+    cost_cny: float = 0.0
+    request_id: str = ""
+    latency_ms: float = 0.0
+
+    def as_dict(self) -> dict:
+        return {
+            "text": self.text,
+            "usage": self.usage.as_dict(),
+            "cost_cny": round(self.cost_cny, 6),
+            "request_id": self.request_id,
+            "latency_ms": round(self.latency_ms, 2),
+        }
+
+
+@dataclass
 class HistoryStep:
     """历史中的一步，喂回给模型看。
 
@@ -348,6 +383,17 @@ class LLMBackend(ABC):
     # ------------------------------------------------------------------ #
 
     @abstractmethod
+    def complete(
+        self,
+        prompt: str,
+        screenshot: Screenshot | None = None,
+        history: list[HistoryStep] | None = None,
+    ) -> RawResponse:
+        """发一次请求，返回**原始文本**，不做任何解释。
+
+        这是每个后端唯一必须实现的方法。截图为 None 时走纯文本调用。
+        """
+
     def predict_action(
         self,
         instruction: str,
@@ -358,7 +404,33 @@ class LLMBackend(ABC):
 
         ``instruction`` 是**单个子任务**的目标，不是整个任务——子任务粒度
         切到原子动作级是开源模型能跑起来的前提，见 M2 设计思路。
+
+        解析放在基类而不是各后端里：动作解析规则只该有一份，M3 新增本地
+        后端时不用抄。后端只管把文本拿回来。
         """
+        from llm.parsing import OutputParseError, parse_action_payload
+
+        raw = self.complete(instruction, screenshot, history)
+
+        try:
+            payload = parse_action_payload(raw.text)
+        except OutputParseError as exc:
+            # **解析失败要带着原文抛。** 没有原文就没法判断是模型的问题
+            # 还是解析层的问题，而这正是 M3 比较各模型格式稳定性的依据
+            raise LLMBackendError(
+                f"模型输出无法解析：{exc}",
+                retryable=True,
+                kind="parse_error",
+            ) from exc
+
+        return ActionIntent(
+            **payload,
+            raw_text=raw.text,
+            usage=raw.usage,
+            cost_cny=raw.cost_cny,
+            request_id=raw.request_id,
+            latency_ms=raw.latency_ms,
+        )
 
     def get_cost(self) -> CostInfo:
         """累计用量与成本。"""

@@ -222,20 +222,20 @@ class Planner:
 
         start = time.perf_counter()
         try:
-            intent = self._ask(system, user, screenshot)
+            raw = self._ask(system, user, screenshot)
         except LLMBackendError as exc:
             raise PlanError(f"拆解调用失败：{exc}") from exc
         latency_ms = (time.perf_counter() - start) * 1000.0
 
-        subtasks, truncated = self._parse(intent.raw_text)
+        subtasks, truncated = self._parse(raw.text)
         plan = Plan(
             instruction=instruction.strip(),
             subtasks=subtasks,
-            raw_text=intent.raw_text,
-            usage=intent.usage,
-            cost_cny=intent.cost_cny,
-            latency_ms=intent.latency_ms or latency_ms,
-            request_id=intent.request_id,
+            raw_text=raw.text,
+            usage=raw.usage,
+            cost_cny=raw.cost_cny,
+            latency_ms=raw.latency_ms or latency_ms,
+            request_id=raw.request_id,
             prompt=self.template.as_dict(),
             truncated=truncated,
         )
@@ -264,7 +264,11 @@ class Planner:
             # "这是当前屏幕…请判断下一步动作"——那是执行阶段的说法，
             # 混进拆解请求里会把模型引向输出单个动作而不是子任务列表
             self.backend.user_template = "{instruction}"
-            return self.backend.predict_action(
+            # 走 complete 而不是 predict_action：后者会把回复按**动作**解析，
+            # 而拆解返回的是 {"subtasks": [...]}，没有 action 字段，必然被
+            # 判成"无法解析"。这个坑是真实调用撞出来的——模型完全正确，
+            # 错的是我们用错了解析出口。
+            return self.backend.complete(
                 user,
                 screenshot if self.with_screenshot else None,
                 history=None,
