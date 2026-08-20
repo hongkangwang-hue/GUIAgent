@@ -1,0 +1,107 @@
+# 服务器端依赖（无头 Linux + GPU）。
+#
+# ## 为什么单独一份，而不是直接用 requirements.txt
+#
+# 本项目的感知与控制层是 **Windows + 真实桌面** 专有的，在无头 Linux 上
+# 装不上、也跑不了：
+#
+#   dxcam / uiautomation  已有 sys_platform == "win32" 标记，会自动跳过
+#   pyautogui / pynput    **没有标记**，Linux 上会去装 Xlib，
+#                         无头环境下 import 就抛 DISPLAY 错误
+#   paddleocr / easyocr   感知侧才用，几百 MB，服务器上纯浪费
+#   opencv-python         会拉一堆 GUI 库依赖，服务器要用 headless 版
+#
+# 服务器只负责三件**没有桌面依赖**的事：
+#   1. LoRA 训练（M3 P0）
+#   2. ScreenSpot 批量评测（M3 挂机线）
+#   3. 微调模型的推理服务（开发调试期用，见下方说明）
+#
+# GUI Agent 的执行端永远在本地 Windows。服务器不是"换个地方跑同一套
+# 东西"，是接管 GPU 那部分。
+
+# --- 深度学习基础 ---
+# ⚠ torch 的 cu 版本按服务器显卡算力选，本文件**不能钉死**。
+# 先查算力：nvidia-smi --query-gpu=name,compute_cap --format=csv
+#   sm_75  (T4 / Turing)          → cu121
+#   sm_80  (A100 / Ampere)        → cu121
+#   sm_86  (RTX 30xx / A10)       → cu121
+#   sm_89  (RTX 40xx / L4 / L40S) → cu121 或 cu124
+#   sm_90  (H100 / Hopper)        → cu124+
+#   sm_120 (RTX 50xx / Blackwell) → cu128+，需 torch 2.7+
+# 装错不会报错，而是"能导入、一运算就崩"——本项目在开发机上已经踩过
+# 一次，详见 docs/开发环境配置文档.md 第 3 节。
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+torch>=2.5.0
+torchvision
+
+# --- 微调工具链 ---
+# 大纲第 228-230 行点名 PEFT。这四个包是 M3 任务 2 的完整链路：
+# Transformers 加载模型 / PEFT 做 LoRA / bitsandbytes 出 4-bit 量化与
+# paged_adamw_8bit 优化器 / Accelerate 管训练循环与混合精度。
+transformers>=4.49.0
+peft>=0.14.0
+accelerate>=1.0.0
+bitsandbytes>=0.45.0
+
+# Qwen2.5-VL 的官方图像预处理工具。**不装会在 processor 那步报错**，
+# 而且报错信息不会提示缺这个包，容易查半天。
+qwen-vl-utils>=0.0.8
+
+# 分词器与序列化，transformers 的隐式依赖，显式列出避免版本漂移
+sentencepiece>=0.2.0
+protobuf>=4.25.0
+
+# --- 数据与图表 ---
+# datasets 组织训练集；pandas 做分布统计（M2 交付物 2 的 4 张图表）；
+# matplotlib/seaborn 画 loss 曲线（M3 交付物 4）与横评对比图
+datasets>=3.0.0
+pandas>=2.0.0
+matplotlib>=3.8.0
+seaborn>=0.13.0
+pillow>=10.0.0
+numpy>=1.24.0
+
+# **headless 版本**，不是 opencv-python。后者会拉 libGL / libgtk 一串
+# 系统库，无头服务器上装不上或装了也没用。两者的 Python API 完全一致。
+opencv-python-headless>=4.9.0
+
+# --- 训练监控 ---
+# M3 交付物 4 要求"训练日志与 loss 曲线图"。tensorboard 够用且无需
+# 联网注册；要用 wandb 的话自己装，别写进这里（它需要账号，会让
+# "一键复现"这条验收标准变复杂）。
+tensorboard>=2.16.0
+
+# --- API 横评 ---
+# ScreenSpot 横评的档 3-6 走 API 挂机批量跑（M3 任务 8），这部分完全
+# 可以在服务器上执行，不占本地机器。
+langchain>=0.3.0
+langchain-openai>=0.2.0
+
+# --- 工程化 ---
+# 服务器上只跑得动**不依赖桌面**的那部分测试（llm/ grounding/ core/
+# 的纯逻辑部分）。perception/ 与 control/ 的用例在这里必然收集失败，
+# 跑测试时要限定路径，见《服务器环境搭建说明》。
+pytest>=8.0.0
+pytest-cov>=5.0.0
+ruff>=0.6.0
+rich>=13.0.0
+typer>=0.12.0
+
+# --- 可选：推理服务 ---
+# vLLM 原生提供 OpenAI 兼容端点，且支持 --enable-lora 直接挂 adapter。
+# 因此本地只需在 llm/providers.py 加一条 Provider 记录就能调它，
+# OpenAICompatBackend 一行都不用改。
+#
+# **注意这属于"API 调用"而非"本地部署"**——大纲第 80 行要求两者都有，
+# 走 HTTP 调服务器只满足前一半。最终交付的离线版必须把 adapter 下载回
+# 本地加载（只有 30-60MB，没有压力）。
+#
+# 装它要额外几 GB 且对 CUDA/torch 版本敏感，因此默认注释掉，确实要起
+# 推理服务时再单独装。
+# vllm>=0.6.0
+
+# --- 可选：训练加速 ---
+# flash-attn 能明显降低长序列的显存与耗时，但编译耗时长（十几分钟起）
+# 且对 CUDA 版本挑剔。**先不装**：M3 是全项目风险最高的一周，不该在
+# 依赖安装上赌时间。训练跑通之后有余力再考虑。
+# flash-attn>=2.7.0
