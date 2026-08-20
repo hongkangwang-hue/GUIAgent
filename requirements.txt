@@ -28,6 +28,9 @@ paddleocr>=2.7.0
 easyocr>=1.7.0
 
 # --- 大模型与 Agent ---
+# 提示词模板外置为 YAML（agent/prompts.py）。langchain 会传递依赖它，
+# 但这里是直接使用，显式列出
+pyyaml>=6.0
 langchain>=0.3.0
 langchain-openai>=0.2.0
 transformers>=4.49.0

@@ -233,8 +233,12 @@ class OpenAICompatBackend(LLMBackend):
         super().__init__(model=self.config.model, price=self.config.price)
         self.name = self.config.name
 
-        self.system_prompt = system_prompt
-        self.few_shot = few_shot or []
+        # 基类已声明 system_prompt / few_shot / user_template，这里只覆盖
+        # 构造时显式给出的部分——留空则沿用基类默认值
+        if system_prompt:
+            self.system_prompt = system_prompt
+        if few_shot:
+            self.few_shot = list(few_shot)
         self.image_size = image_size
         #: 温度取 0：这是动作决策，不是创作。同一个界面同一个目标，
         #: 应当尽量给出同一个动作——否则 M3 的横评每跑一次结论都不同
@@ -355,6 +359,16 @@ class OpenAICompatBackend(LLMBackend):
 
         messages.extend(self._history_messages(history))
 
+        text = self._user_prompt(instruction)
+
+        if screenshot is None:
+            # 纯文本调用。Planner 可配成不看屏幕拆解（with_screenshot=False），
+            # 那时不该硬塞一张图——既多花 token，也会让 M3 消融里
+            # "看屏幕拆解 vs 不看" 这一组对照失去意义
+            self.last_image_meta = {}
+            messages.append(HumanMessage(content=text))
+            return messages
+
         image_url, self.last_image_meta = encode_screenshot(
             screenshot,
             size=self.image_size,
@@ -363,7 +377,7 @@ class OpenAICompatBackend(LLMBackend):
         messages.append(
             HumanMessage(
                 content=[
-                    {"type": "text", "text": self._user_prompt(instruction)},
+                    {"type": "text", "text": text},
                     {"type": "image_url", "image_url": {"url": image_url}},
                 ]
             )
@@ -405,12 +419,20 @@ class OpenAICompatBackend(LLMBackend):
         return messages
 
     def _user_prompt(self, instruction: str) -> str:
-        return (
-            f"当前子任务目标：{instruction}\n\n"
-            f"这是当前屏幕（{self.image_size[0]}×{self.image_size[1]}）。"
-            f"请判断下一步动作，坐标必须落在这张图的范围内。"
-            f'若该子任务已完成，返回 {{"done": true}}。'
-        )
+        """按 `user_template` 渲染这一轮的用户消息。
+
+        逐键替换而不是 `str.format`：模板里常出现 JSON 示例
+        （``{"done": true}``），format 会把那些花括号当占位符炸掉。
+        口径与 `agent.prompts._safe_format` 一致。
+        """
+        text = self.user_template
+        for key, value in (
+            ("instruction", instruction),
+            ("width", self.image_size[0]),
+            ("height", self.image_size[1]),
+        ):
+            text = text.replace("{" + key + "}", str(value))
+        return text
 
     # ------------------------------------------------------------------ #
 

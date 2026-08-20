@@ -319,10 +319,31 @@ class LLMBackend(ABC):
     #: 后端标识，进轨迹日志。横评报告按这个字段分组
     name: str = "base"
 
+    #: 送模型的默认用户提示模板。``{instruction}`` 会被子任务目标替换，
+    #: ``{width}`` / ``{height}`` 被画布尺寸替换
+    DEFAULT_USER_TEMPLATE = """当前子任务目标：{instruction}
+
+这是当前屏幕（{width}×{height}）。请判断下一步动作，坐标必须落在这张图的范围内。
+若该子任务已完成，输出 {"done": true}。"""
+
     def __init__(self, model: str = "", price: PriceSheet | None = None) -> None:
         self.model = model
         self.price = price
         self._cost = CostInfo(model=model)
+
+        # --- 提示词配置放在基类上 ---
+        #
+        # 这三项是**每个后端都该认的通用配置**，不是某个实现的私有属性。
+        # 放基类的理由是 M2 设计思路那条硬要求：Agent 层对后端切换无感知。
+        # 若只有 OpenAICompatBackend 有 system_prompt，Planner 就得先判断
+        # 面对的是哪种后端才敢赋值——那等于把切换成本转嫁给了 Agent 层，
+        # M3 加本地后端时这段判断还要再改一次。
+        #
+        # 不认这些配置的实现（比如测试用的 ScriptedBackend）留着不用即可，
+        # 有属性总比让调用方做类型判断便宜。
+        self.system_prompt: str = ""
+        self.few_shot: list[dict] = []
+        self.user_template: str = self.DEFAULT_USER_TEMPLATE
 
     # ------------------------------------------------------------------ #
 

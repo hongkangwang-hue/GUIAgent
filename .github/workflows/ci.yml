@@ -27,7 +27,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install numpy pillow opencv-python mss pyautogui pynput pyperclip uiautomation dxcam
-          pip install pytest pytest-cov ruff rich
+          pip install pytest pytest-cov ruff rich pyyaml
 
       - name: Lint
         run: ruff check .
@@ -36,11 +36,11 @@ jobs:
         # CI runner 没有真实桌面（无交互式会话），跳过标 windows 的用例。
         # 那部分由虚拟机内的 scripts/verify_control.py 人工验证覆盖 ——
         # CI 覆盖不到的正是风险最高的那一半，这一点必须清楚。
-        run: pytest tests/ -q -m "not windows" --cov=perception --cov=control --cov=llm --cov=grounding --cov=core --cov-report=term
+        run: pytest tests/ -q -m "not windows" --cov=perception --cov=control --cov=llm --cov=grounding --cov=core --cov=agent --cov-report=term
 
       - name: 覆盖率门槛
         # M1 交付要求覆盖率不低于 60%
-        run: pytest tests/ -q -m "not windows" --cov=perception --cov=control --cov=llm --cov=grounding --cov=core --cov-fail-under=60
+        run: pytest tests/ -q -m "not windows" --cov=perception --cov=control --cov=llm --cov=grounding --cov=core --cov=agent --cov-fail-under=60
 
   secrets:
     runs-on: ubuntu-latest
