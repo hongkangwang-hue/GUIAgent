@@ -165,8 +165,12 @@ def _price_from_env(provider: Provider) -> PriceSheet | None:
     单位元/千 token，去平台计费页面抄。
     """
     prefix = provider.api_key_env.rsplit("_API_KEY", 1)[0]
-    raw_in = os.getenv(f"{prefix}_PRICE_IN_PER_1K")
-    raw_out = os.getenv(f"{prefix}_PRICE_OUT_PER_1K")
+    raw_in = _nonblank(f"{prefix}_PRICE_IN_PER_1K")
+    raw_out = _nonblank(f"{prefix}_PRICE_OUT_PER_1K")
+    # 两个都没填才算未配置。**空字符串等同于没填**——.env 里留着
+    # `ZHIPU_PRICE_IN_PER_1K=` 这样的空行是常态，os.getenv 对它返回 ""
+    # 而不是 None，按"已配置"处理会造出一张 0 元单价表并标成可信，
+    # 于是成本恒为 0 却看起来像真的。这正是本模块开头要避免的那种数字。
     if raw_in is None and raw_out is None:
         return None
     try:
@@ -181,9 +185,15 @@ def _price_from_env(provider: Provider) -> PriceSheet | None:
         return None
 
 
-def _optional_float(name: str) -> float | None:
+def _nonblank(name: str) -> str | None:
+    """环境变量的值，空白等同于未设置。"""
     raw = os.getenv(name)
-    if raw is None or not raw.strip():
+    return raw.strip() if raw and raw.strip() else None
+
+
+def _optional_float(name: str) -> float | None:
+    raw = _nonblank(name)
+    if raw is None:
         return None
     try:
         return float(raw)

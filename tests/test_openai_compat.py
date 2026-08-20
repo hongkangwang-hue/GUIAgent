@@ -145,6 +145,29 @@ def test_price_from_env(monkeypatch) -> None:
     assert price.cost_of(1000, 1000) == pytest.approx(0.008)
 
 
+def test_blank_price_is_treated_as_unset(monkeypatch) -> None:
+    """.env 里留空行是常态，空字符串必须等同于没填。
+
+    os.getenv 对 ``ZHIPU_PRICE_IN_PER_1K=`` 返回 "" 而不是 None，按"已
+    配置"处理会造出一张 0 元单价表并标成可信——成本恒为 0 却看起来像
+    真的，正是"不猜单价"这条规矩要避免的东西。
+    """
+    monkeypatch.setenv("ZHIPU_API_KEY", "zk-1")
+    monkeypatch.setenv("ZHIPU_PRICE_IN_PER_1K", "")
+    monkeypatch.setenv("ZHIPU_PRICE_OUT_PER_1K", "   ")
+    assert resolve("zhipu").price is None
+
+
+def test_partial_price_still_counts_as_configured(monkeypatch) -> None:
+    """只填了输入单价也算配置了——缺的那半按 0 算，总比整张表作废好。"""
+    monkeypatch.setenv("ZHIPU_API_KEY", "zk-1")
+    monkeypatch.setenv("ZHIPU_PRICE_IN_PER_1K", "0.001")
+    monkeypatch.delenv("ZHIPU_PRICE_OUT_PER_1K", raising=False)
+    price = resolve("zhipu").price
+    assert price is not None
+    assert price.cost_of(1000, 1000) == pytest.approx(0.001)
+
+
 def test_bad_price_is_treated_as_unset(monkeypatch) -> None:
     monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-1")
     monkeypatch.setenv("DASHSCOPE_PRICE_IN_PER_1K", "很便宜")
