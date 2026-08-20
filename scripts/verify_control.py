@@ -38,6 +38,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# Windows 控制台默认 cp936（GBK）。本脚本的总结行用了 ✓ / ✗ / ⚠，
+# 这几个字符都不在 GBK 码表里，print 会直接抛 UnicodeEncodeError ——
+# 而且是在**全部检查跑完之后**才崩，等于白跑一遍真机验证。
+# 本项目已经在 StepRecord.summary 与模型输出上各踩过一次同样的坑。
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 from control.actions import Action, ActionType  # noqa: E402
 from control.emergency_stop import EmergencyStop  # noqa: E402
 from control.executor import ActionExecutor  # noqa: E402
@@ -346,7 +354,9 @@ class Verifier:
                 break
 
         if blocked_at is None:
-            self.record(CheckResult("急停热键", False, "15 秒内未收到热键。检查是否被其他程序占用该组合键"))
+            self.record(
+                CheckResult("急停热键", False, "15 秒内未收到热键。检查是否被其他程序占用该组合键")
+            )
             return
 
         latency_ms = (blocked_at - stop.triggered_at) * 1000.0
@@ -404,12 +414,20 @@ def main() -> int:
     parser.add_argument("--skip-input", action="store_true", help="跳过需要文本框的输入检查")
     parser.add_argument("--skip-stop", action="store_true", help="跳过需要人工按键的急停检查")
     parser.add_argument("--monitor", type=int, default=1)
+    parser.add_argument(
+        "--report",
+        default="docs/m1-control-verification.md",
+        help="结果写入的报告文件。传空字符串则不写",
+    )
+    parser.add_argument("--note", default="", help="备注，比如 DPI 档位或运行环境")
     args = parser.parse_args()
 
     dpi = dpi_describe()
     print("=" * 70)
     print("控制层真机验证")
-    print(f"  DPI 缩放 {dpi['scale_factor']:.0%}（{dpi['system_dpi']} DPI），感知={dpi['dpi_aware']}")
+    print(
+        f"  DPI 缩放 {dpi['scale_factor']:.0%}（{dpi['system_dpi']} DPI），感知={dpi['dpi_aware']}"
+    )
     print("  ⚠ 本脚本会真的移动鼠标与敲键盘，必须在隔离虚拟机内运行")
     print("=" * 70)
 
@@ -418,8 +436,9 @@ def main() -> int:
         scaler = CoordinateScaler(region)
         scaler.register(SPACE, 1024, 768)
         print(f"  截图区域 {region.as_tuple()}，引擎 {capturer.engine_name}")
-        print(f"  坐标系 {SPACE} 1024×768，往返误差上界 "
-              f"{scaler.roundtrip_error_bound(SPACE):.2f}px\n")
+        print(
+            f"  坐标系 {SPACE} 1024×768，往返误差上界 {scaler.roundtrip_error_bound(SPACE):.2f}px\n"
+        )
 
         executor = ActionExecutor(
             scaler, space_name=SPACE, capturer=capturer, emergency_stop=EmergencyStop()
@@ -431,7 +450,10 @@ def main() -> int:
             checks = {
                 "coord": verifier.check_coordinate_chain,
                 "click": verifier.check_click_lands_on_target,
-                "actions": lambda: (verifier.check_actions(), verifier.check_drag_releases_button()),
+                "actions": lambda: (
+                    verifier.check_actions(),
+                    verifier.check_drag_releases_button(),
+                ),
                 "safety": lambda: (
                     verifier.check_safety_still_blocks(),
                     verifier.check_failsafe_configured(),
@@ -466,7 +488,61 @@ def main() -> int:
     print()
     print("提醒：M1 验收标准 3 要求在 100% / 125% / 150% 三档 DPI 缩放下都正确。")
     print("      改系统缩放后重跑本脚本，三次结果都要记录进验收材料。")
+
+    if args.report:
+        path = _write_report(Path(args.report), verifier.results, dpi, region, args.note)
+        print()
+        print(f"结果已追加到 {path}")
+
     return 1 if failed else 0
+
+
+def _write_report(path: Path, results, dpi: dict, region, note: str) -> Path:
+    """把本次结果**追加**进报告。
+
+    追加而非覆盖：M1 验收标准 3 要求三档 DPI 各跑一次，覆盖的话前两次
+    就没了。每次一节，带上 DPI 与环境备注，三次结果自然并排可比。
+    """
+    from datetime import datetime
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    new_file = not path.exists()
+
+    lines: list[str] = []
+    if new_file:
+        lines += [
+            "# M1 控制层真机验证记录",
+            "",
+            "> 由 `python scripts/verify_control.py` 生成，每跑一次追加一节。",
+            "> 对应 M1 验收标准 3（三档 DPI）、5（动作与中文输入）、",
+            "> 6（宿主机→虚拟机通路）、7（两道急停）。",
+            "",
+        ]
+
+    passed = sum(1 for r in results if r.passed)
+    lines += [
+        "---",
+        "",
+        f"## {datetime.now():%Y-%m-%d %H:%M}" + (f" —— {note}" if note else ""),
+        "",
+        f"- DPI 缩放：**{dpi['scale_factor']:.0%}**（{dpi['system_dpi']} DPI，"
+        f"感知={dpi['dpi_aware']}）",
+        f"- 截图区域：{region.as_tuple()}",
+        f"- 结果：**{passed}/{len(results)} 项通过**",
+        "",
+        "| 检查项 | 结果 | 详情 |",
+        "|---|---|---|",
+    ]
+    for result in results:
+        mark = "通过" if result.passed else "**未通过**"
+        # 竖线会把 Markdown 表格切断，换行会把一行拆成两行
+        detail = result.detail.replace("|", "\\|").replace("\n", " ")
+        lines.append(f"| {result.name} | {mark} | {detail} |")
+    lines.append("")
+
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+    return path
 
 
 if __name__ == "__main__":
