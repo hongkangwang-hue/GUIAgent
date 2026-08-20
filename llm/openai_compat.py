@@ -385,16 +385,25 @@ class OpenAICompatBackend(LLMBackend):
             return []
 
         messages: list = []
-        with_image_from = max(0, len(history) - self.history_images)
+        # 兜底策略：历史步骤没被 ContextWindow 标注过时（比如直接用
+        # AgentLoop 而不经 Session），退回"只带最近 history_images 张"
+        fallback_from = max(0, len(history) - self.history_images)
 
         for index, step in enumerate(history):
             messages.append(AIMessage(content=step.summary()))
 
-            if index < with_image_from or step.screenshot is None:
+            if step.screenshot is None:
                 continue
+            annotated = step.image_scale != 1.0 or not step.with_image
+            wanted = step.with_image if annotated else index >= fallback_from
+            if not wanted:
+                continue
+
+            width = max(int(self.image_size[0] * step.image_scale), 1)
+            height = max(int(self.image_size[1] * step.image_scale), 1)
             image_url, _ = encode_screenshot(
                 step.screenshot,
-                size=self.image_size,
+                size=(width, height),
                 max_bytes=self.config.max_image_bytes,
             )
             messages.append(

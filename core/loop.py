@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from control.actions import ActionValidationError
@@ -164,6 +165,7 @@ class AgentLoop:
         capturer: ScreenCapturer,
         writer: TrajectoryWriter | None = None,
         config: LoopConfig | None = None,
+        history_selector: Callable[[list[HistoryStep]], list[HistoryStep]] | None = None,
     ) -> None:
         self.llm = llm
         self.grounding = grounding
@@ -173,6 +175,14 @@ class AgentLoop:
         self.config = config or LoopConfig()
         #: 跨子任务累积，供上层做整任务的成本熔断
         self.history: list[HistoryStep] = []
+
+        #: 从完整历史里挑出本轮要回传的部分。
+        #:
+        #: 做成注入的钩子而不是直接 import `agent.context`，是为了**依赖
+        #: 方向不反**：Loop 是被编排的一层，不该反过来依赖编排层。上下文
+        #: 策略是 M3 要做消融的变量，让它从外面进来，Loop 自己只保留一个
+        #: 够用的默认实现（简单切片）。
+        self.history_selector = history_selector
 
     # ------------------------------------------------------------------ #
 
@@ -410,11 +420,14 @@ class AgentLoop:
         )
 
     def _recent_history(self) -> list[HistoryStep]:
-        """最近 k 步。
+        """本轮要回传给模型的历史。
 
-        旧帧对当前决策的价值衰减很快，而每帧都要付 token 费。k 由配置
-        控制而不是写死，是因为 M3 的提示词消融要测这个参数。
+        注入了 `history_selector` 就用它（`agent.context.ContextWindow`
+        会做分档降采样）；没注入则退回简单切片——够用，且让 Loop 在不接
+        编排层时也能独立跑起来，单元测试因此不必拖上整个 agent 层。
         """
+        if self.history_selector is not None:
+            return self.history_selector(self.history)
         if self.config.history_k <= 0:
             return []
         return self.history[-self.config.history_k :]

@@ -145,6 +145,30 @@ class ContextWindow:
             )
         return frames
 
+    def select_steps(self, history: list[HistoryStep]) -> list[HistoryStep]:
+        """挑选并**标注**历史步骤，直接可以交给后端。
+
+        返回的是副本：``with_image`` 与 ``image_scale`` 是"本轮怎么回传"
+        的决策，不是这一步的固有属性。写回原对象的话，同一段历史在不同
+        策略下会互相污染——而 M3 的上下文消融正是要拿同一段历史跑不同
+        策略，那时结果就不可比了。
+        """
+        selected: list[HistoryStep] = []
+        for frame in self.select(history):
+            step = frame.step
+            selected.append(
+                HistoryStep(
+                    action=step.action,
+                    thinking=step.thinking,
+                    screenshot=step.screenshot,
+                    success=step.success,
+                    error=step.error,
+                    with_image=frame.with_image,
+                    image_scale=frame.scale,
+                )
+            )
+        return selected
+
     def stats(self, history: list[HistoryStep]) -> dict:
         """本轮上下文的构成，进轨迹日志。
 
@@ -181,8 +205,8 @@ class Conversation:
         self.steps.append(step)
 
     def recent(self) -> list[HistoryStep]:
-        """按策略裁剪后的历史，直接喂给后端。"""
-        return [frame.step for frame in self.window.select(self.steps)]
+        """按策略裁剪并标注后的历史，直接喂给后端。"""
+        return self.window.select_steps(self.steps)
 
     def frames(self) -> list[ContextFrame]:
         return self.window.select(self.steps)

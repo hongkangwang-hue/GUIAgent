@@ -30,6 +30,7 @@ from agent.prompts import (
     load_template,
     render_action_reference,
 )
+from agent.session import Session, SessionConfig, SessionResult, SubtaskOutcome
 
 __all__ = [
     "DEFAULT_POLICY",
@@ -47,7 +48,11 @@ __all__ = [
     "Planner",
     "PromptError",
     "PromptTemplate",
+    "Session",
+    "SessionConfig",
+    "SessionResult",
     "SubTask",
+    "SubtaskOutcome",
     "list_templates",
     "load_template",
     "render_action_reference",

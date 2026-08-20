@@ -328,6 +328,16 @@ class HistoryStep:
     success: bool = True
     error: str = ""
 
+    #: 本轮回传时要不要带图。由 `agent.context.ContextWindow` 按策略决定，
+    #: 后端只负责照做——**策略与执行分开**，因为上下文策略是 M3 要做消融
+    #: 的变量，而后端不该知道消融这回事
+    with_image: bool = True
+    #: 带图时缩到原尺寸的多少倍。1.0 为全分辨率。
+    #:
+    #: 这个字段是"旧帧降采样"落地的地方。没有它，ContextWindow 算出的
+    #: 分辨率决策就传不到编码那一步，降采样只能退化成"带或不带"。
+    image_scale: float = 1.0
+
     def summary(self) -> str:
         """一行文本摘要，塞进提示词。"""
         if self.action is None:

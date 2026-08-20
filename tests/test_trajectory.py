@@ -356,3 +356,51 @@ def test_meta_round_trip(tmp_path) -> None:
     assert meta.instruction == "在记事本里写一句话"
     assert meta.backend == "qwen_vl_api"
     assert meta.duration_s >= 0
+
+
+# ===================================================================== #
+# no_action 不是失败 —— 回归测试
+#
+# 模型报告子任务完成的那一步 execution_status 是 no_action：它没有动作可
+# 执行，既不算"成功执行了动作"，也不是失败。最初把 succeeded 的反面当成
+# 失败，后果是每条轨迹的收尾步都被拉进待打标清单，逼人给一次正常完成打
+# 错误标签；按步统计成功率时每条轨迹还凭空多一次失败。
+# ===================================================================== #
+
+
+def test_done_step_is_not_a_failure() -> None:
+    record = _step(execution_status="no_action", action_model_coords={})
+    assert record.failed is False
+    assert record.is_terminal is True
+    assert record.succeeded is False  # 它确实没执行动作，这一条仍然为假
+
+
+def test_failed_and_succeeded_are_not_complementary() -> None:
+    """三种状态，不是二元的。"""
+    assert _step(execution_status="ok").succeeded
+    assert _step(execution_status="failed").failed
+    assert not _step(execution_status="no_action").failed
+    assert not _step(execution_status="no_action").succeeded
+
+
+@pytest.mark.parametrize("status", ["failed", "rejected", "error"])
+def test_real_failures_are_flagged(status) -> None:
+    assert _step(execution_status=status).failed
+
+
+def test_done_steps_excluded_from_labeling_queue(tmp_path) -> None:
+    """待打标清单里不该出现正常收尾的那一步。"""
+    writer = _writer(tmp_path)
+    writer.append(_step())
+    writer.append(_step(execution_status="failed", error="点偏了"))
+    writer.append(_step(execution_status="no_action", action_model_coords={}))
+
+    assert [s.step for s in TrajectoryReader(writer.root).failed_steps()] == [2]
+
+
+def test_done_step_summary_reads_as_done() -> None:
+    record = _step(execution_status="no_action", action_model_coords={})
+    summary = record.summary()
+    assert "DONE" in summary
+    assert "FAIL" not in summary
+    summary.encode("gbk")  # 仍然要 cp936 可打印

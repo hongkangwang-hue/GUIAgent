@@ -140,9 +140,28 @@ class StepRecord:
 
     meta: dict = field(default_factory=dict)
 
+    #: 真正算失败的状态。**no_action 不在其中**——模型报告子任务完成的
+    #: 那一步没有动作可执行，它既不是"成功执行了动作"，也不是失败。
+    #:
+    #: 把它算成失败有实际后果：`failed_steps` 会把每条轨迹的收尾步都拉
+    #: 进待打标清单，逼人给一次正常完成打错误标签；按步统计成功率时，
+    #: 每条轨迹还会凭空多一次失败。
+    FAILURE_STATUSES = ("failed", "rejected", "error")
+
     @property
     def succeeded(self) -> bool:
+        """这一步成功执行了动作。"""
         return self.execution_status == "ok"
+
+    @property
+    def failed(self) -> bool:
+        """这一步真的出错了。与 `succeeded` **不是互补关系**。"""
+        return self.execution_status in self.FAILURE_STATUSES
+
+    @property
+    def is_terminal(self) -> bool:
+        """模型在这一步报告子任务完成。"""
+        return self.execution_status == "no_action"
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -167,7 +186,10 @@ class StepRecord:
         成为新的崩溃源。
         """
         action = self.action_model_coords.get("action", "-")
-        mark = "OK  " if self.succeeded else "FAIL"
+        if self.is_terminal:
+            mark, action = "DONE", action if action != "-" else "（模型报告完成）"
+        else:
+            mark = "OK  " if self.succeeded else "FAIL"
         line = f"{mark} #{self.step} (sub{self.subtask_id}) {action}"
         if self.error:
             line += f" - {self.error}"
@@ -408,8 +430,13 @@ class TrajectoryReader:
         return self.root / relative_path
 
     def failed_steps(self) -> list[StepRecord]:
-        """需要打标的步骤。"""
-        return [s for s in self.iter_steps() if not s.succeeded]
+        """需要打标的步骤。
+
+        用 `StepRecord.failed` 而不是 ``not succeeded``：后者会把模型报告
+        完成的收尾步也算进来，于是每条轨迹都至少有一条"待打标"，而它其实
+        什么问题都没有。
+        """
+        return [s for s in self.iter_steps() if s.failed]
 
     # ------------------------------------------------------------------ #
 
