@@ -201,6 +201,35 @@ def test_non_numeric_point() -> None:
     assert extract_point({"x": "左边", "y": "上面"}) is None
 
 
+def test_point_packed_into_x_with_no_y() -> None:
+    """x 里装着整个坐标对，y 缺席。
+
+    这不是假想：qwen3-vl-8b-instruct 实测三次里两次是这个形状——
+        {"action": "left_click", "x": [314, 48], "thinking": "..."}
+    写法古怪但无歧义。不捞的话这个模型 2/3 的输出会被判成"没给坐标"，
+    能力被严重低估，而 M3 横评正是要测它的真实能力边界。
+    """
+    assert extract_point({"x": [314, 48]}) == (314, 48)
+
+
+def test_packed_point_as_string() -> None:
+    assert extract_point({"x": "[319, 48]"}) == (319, 48)
+
+
+def test_packed_bbox_in_x_collapses_to_center() -> None:
+    assert extract_point({"x": [100, 200, 150, 240]}) == (125, 220)
+
+
+def test_packed_x_with_conflicting_y_is_not_guessed() -> None:
+    """x=[314,48] 与 y=50 互相矛盾，挑一个不如判失败。"""
+    assert extract_point({"x": [314, 48], "y": 50}) is None
+
+
+def test_scalar_x_without_y_is_still_dropped() -> None:
+    """单个标量不构成点，这条不能被上面的放宽波及。"""
+    assert extract_point({"x": 100}) is None
+
+
 def test_three_numbers_is_ambiguous() -> None:
     """三个数既不是点也不是框，不猜。"""
     assert extract_point({"point": [1, 2, 3]}) is None

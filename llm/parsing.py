@@ -296,6 +296,21 @@ def extract_point(data: dict) -> tuple[int, int] | None:
         if pair:
             return pair
 
+    # x 里装着整个坐标对，y 缺席。
+    #
+    # 实测 qwen3-vl-8b-instruct 有 2/3 的输出是这个形状：
+    #     {"action": "left_click", "x": [314, 48], "thinking": "..."}
+    # 写法古怪，但**无歧义**——只有一个数值序列、没有 y，它只可能是点。
+    # 按"能无歧义还原就还原"的原则必须捞回来：不捞的话这个模型三次里
+    # 两次会被判成"没给坐标"，能力被严重低估。
+    #
+    # y 同时存在时不猜：那种情况下 x=[314,48] 与 y=50 互相矛盾，
+    # 交给下面的 POINT_KEYS 或直接判失败，好过挑一个。
+    if x is not None and y is None:
+        packed = _sequence_to_point(x)
+        if packed:
+            return packed
+
     raw = first_key(data, POINT_KEYS)
     if raw is None:
         return None
@@ -320,6 +335,26 @@ def extract_point(data: dict) -> tuple[int, int] | None:
         if len(numbers) == 4:
             left, top, right, bottom = (float(n) for n in numbers)
             return _to_int_pair((left + right) / 2, (top + bottom) / 2)
+    return None
+
+
+def _sequence_to_point(value) -> tuple[int, int] | None:
+    """把"一串数"解释成点：两个数是点，四个数是框取中心，其余不猜。
+
+    列表、元组、以及 ``"[314, 48]"`` 这类字符串都认。
+    """
+    if isinstance(value, list | tuple):
+        numbers = [n for n in value if isinstance(n, int | float)]
+    elif isinstance(value, str):
+        numbers = [float(n) for n in _NUMBER.findall(value)]
+    else:
+        return None
+
+    if len(numbers) == 2:
+        return _to_int_pair(numbers[0], numbers[1])
+    if len(numbers) == 4:
+        left, top, right, bottom = numbers
+        return _to_int_pair((left + right) / 2, (top + bottom) / 2)
     return None
 
 

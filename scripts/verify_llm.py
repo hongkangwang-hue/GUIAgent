@@ -39,6 +39,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# Windows 控制台默认 cp936（GBK），而**模型输出里带 emoji 是常态**——
+# 实测百炼回过 "OK! 😊"，U+1F60A 不在 GBK 码表里，print 直接抛
+# UnicodeEncodeError。本脚本的全部价值就是把模型的真实输出打给人看，
+# 它不能因为对方多打了个表情就崩掉。
+#
+# errors="replace" 而不是 "ignore"：编不出的字符要留个占位，让人知道
+# 那里原本有东西，而不是无声消失。
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 from llm.base import LLMBackendError  # noqa: E402
 from llm.openai_compat import OpenAICompatBackend  # noqa: E402
 from llm.parsing import OutputParseError, parse_action_payload  # noqa: E402
@@ -51,6 +62,9 @@ from llm.providers import (  # noqa: E402
 )
 
 REPORT = Path("docs/m1-d1-api-verification.md")
+
+#: 当前正在测的截图。_call_with_retry 从这里取，避免多传一层参数
+screenshot_holder: list = [None]
 
 #: 给模型的验证任务。
 #:
@@ -104,12 +118,13 @@ def probe(provider_key: str, screenshot, repeat: int) -> dict:
 
     record["config"] = config.masked()
     backend = OpenAICompatBackend(config=config, system_prompt=SYSTEM_PROMPT)
+    screenshot_holder[0] = screenshot
 
     for index in range(repeat):
         run: dict = {"index": index + 1}
         start = time.perf_counter()
         try:
-            intent = backend.predict_action(PROBE_INSTRUCTION, screenshot)
+            intent = _call_with_retry(backend, run)
         except LLMBackendError as exc:
             run.update(ok=False, error=str(exc), kind=exc.kind, retryable=exc.retryable)
             # 解析失败时原始输出仍有价值 —— 那正是判断"模型能不能用"的依据
@@ -134,10 +149,59 @@ def probe(provider_key: str, screenshot, repeat: int) -> dict:
 
     record["image_meta"] = backend.last_image_meta
     record["cost"] = backend.get_cost().as_dict()
-    ok_count = sum(1 for run in record["runs"] if run.get("ok"))
-    record["status"] = "通过" if ok_count == repeat else ("部分通过" if ok_count else "失败")
+    record["status"] = _verdict(record["runs"])
+    record["throttled"] = sum(1 for run in record["runs"] if run.get("retries"))
     backend.close()
     return record
+
+
+def _verdict(runs: list[dict]) -> str:
+    """判定这家平台是否通过。
+
+    **限流不算能力失败。** 本脚本要回答的是"传图通道通不通、模型能不能
+    输出可解析的结构化结果"，而 429 说明的是平台当前有多忙——免费档模型
+    （glm-4.6v-flash 一类）被限流是常态，把它和"模型看不懂图"混成一个
+    "失败"，会让 M1 D1 的结论失真。
+
+    因此：只要有成功的调用、且没有非限流的失败，就算通过；限流次数
+    单独记一列，它是 M3 选型时的吞吐参考，不是能力判据。
+    """
+    ok = [run for run in runs if run.get("ok")]
+    if not ok:
+        return "失败"
+    hard_failures = [run for run in runs if not run.get("ok") and run.get("kind") != "transient"]
+    if hard_failures:
+        return "部分通过"
+    return "通过" if len(ok) == len(runs) else "通过（有限流）"
+
+
+#: 限流后的退避秒数。免费档模型（如 glm-4.6v-flash）被限流是常态，
+#: 实测智谱三次里两次返回 429「该模型当前访问量过大」。不退避重试的话，
+#: 这个脚本对免费模型基本得不到结论，而它的用途恰恰是给出结论。
+BACKOFF_SECONDS = (5, 15, 30)
+
+
+def _call_with_retry(backend, run: dict):
+    """可重试的错误就退避后再试，不可重试的立刻抛。
+
+    重试次数记进 run，报告里要体现——"重试两次才成功"和"一次就成功"
+    是不同的稳定性，M3 选型时这个差别有意义。
+    """
+    last: LLMBackendError | None = None
+    for attempt, delay in enumerate((0, *BACKOFF_SECONDS)):
+        if delay:
+            print(f"      限流，{delay}s 后重试…")
+            time.sleep(delay)
+        try:
+            intent = backend.predict_action(PROBE_INSTRUCTION, screenshot_holder[0])
+        except LLMBackendError as exc:
+            last = exc
+            if not exc.retryable:
+                raise
+            run["retries"] = attempt + 1
+            continue
+        return intent
+    raise last
 
 
 def _reparse_ok(raw: str) -> bool:
@@ -187,8 +251,8 @@ def write_report(records: list[dict], image_note: str) -> Path:
         "",
         "## 结果汇总",
         "",
-        "| 平台 | 模型 | 状态 | 可解析 | 坐标在范围内 | 平均延迟 | 平均 tokens |",
-        "|---|---|---|---|---|---|---|",
+        "| 平台 | 模型 | 状态 | 可解析 | 坐标在范围内 | 平均延迟 | 平均 tokens | 限流重试 |",
+        "|---|---|---|---|---|---|---|---|",
     ]
 
     for record in records:
@@ -204,7 +268,8 @@ def write_report(records: list[dict], image_note: str) -> Path:
             parsable = bounded = latency_text = tokens_text = "—"
         lines.append(
             f"| {PROVIDERS[record['provider']].label} | {config.get('model', '—')} | "
-            f"{record['status']} | {parsable} | {bounded} | {latency_text} | {tokens_text} |"
+            f"{record['status']} | {parsable} | {bounded} | {latency_text} | {tokens_text} | "
+            f"{record.get('throttled', 0)} 次 |"
         )
 
     lines += ["", "## 逐家详情", ""]
@@ -279,7 +344,7 @@ def main() -> int:
     if args.json:
         print(json.dumps(records, ensure_ascii=False, indent=2, default=str))
 
-    passed = [r for r in records if r["status"] == "通过"]
+    passed = [r for r in records if r["status"].startswith("通过")]
     print(f"\n通过 {len(passed)}/{len(records)} 家。")
     if len(passed) < 2:
         print("M1 D1 要求至少测通两家，当前不足。")
