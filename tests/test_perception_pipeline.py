@@ -12,13 +12,22 @@
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pytest
 
 from perception.capture import Screenshot
 from perception.element_detector import ElementDetector
 from perception.ocr_engine import OCREngine, OCRResult, PaddleOCREngine
-from perception.preprocess import AGGRESSIVE, DEFAULT, PASSTHROUGH, PreprocessConfig, preprocess
+from perception.preprocess import (
+    AGGRESSIVE,
+    DEFAULT,
+    PASSTHROUGH,
+    UPSCALE2X,
+    PreprocessConfig,
+    preprocess,
+)
 from perception.types import BBox, ElementSource, UIElement
 from perception.uia_tree import UIATree, find_by_name
 from perception.visualizer import draw_elements, draw_legend, save_annotated
@@ -62,7 +71,9 @@ def test_grayscale_reduces_channels() -> None:
 
 
 def test_upscale_changes_size() -> None:
-    result = preprocess(_canvas(100, 200), PreprocessConfig(grayscale=False, clahe=False, upscale=2.0))
+    result = preprocess(
+        _canvas(100, 200), PreprocessConfig(grayscale=False, clahe=False, upscale=2.0)
+    )
     assert result.shape[:2] == (200, 400)
 
 
@@ -128,7 +139,9 @@ def test_no_rescale_when_upscale_is_one() -> None:
 
 
 def test_polygon_is_rescaled_too() -> None:
-    raw = [OCRResult("x", BBox(10, 10, 20, 20), 0.9, polygon=[(10, 10), (20, 10), (20, 20), (10, 20)])]
+    raw = [
+        OCRResult("x", BBox(10, 10, 20, 20), 0.9, polygon=[(10, 10), (20, 10), (20, 20), (10, 20)])
+    ]
     engine = FakeOCREngine(raw, PreprocessConfig(grayscale=False, clahe=False, upscale=2.0))
     assert engine.recognize(_canvas())[0].polygon[0] == (5, 5)
 
@@ -144,7 +157,10 @@ def test_low_confidence_results_filtered() -> None:
 
 
 def test_blank_text_filtered() -> None:
-    raw = [OCRResult("   ", BBox(0, 0, 10, 10), 0.99), OCRResult("有内容", BBox(0, 20, 10, 30), 0.99)]
+    raw = [
+        OCRResult("   ", BBox(0, 0, 10, 10), 0.99),
+        OCRResult("有内容", BBox(0, 20, 10, 30), 0.99),
+    ]
     engine = FakeOCREngine(raw, PASSTHROUGH)
     assert len(engine.recognize(_canvas())) == 1
 
@@ -194,11 +210,13 @@ def test_parse_handles_empty(raw) -> None:
 
 def test_parse_skips_malformed_lines_but_keeps_good_ones() -> None:
     """一条坏数据不该让整张图的识别结果全丢。"""
-    raw = [[
-        [[[0, 0], [10, 0], [10, 8], [0, 8]], ("好", 0.9)],
-        ["坏数据"],
-        [[[0, 20], [10, 20], [10, 28], [0, 28]], ("也好", 0.9)],
-    ]]
+    raw = [
+        [
+            [[[0, 0], [10, 0], [10, 8], [0, 8]], ("好", 0.9)],
+            ["坏数据"],
+            [[[0, 20], [10, 20], [10, 28], [0, 28]], ("也好", 0.9)],
+        ]
+    ]
     assert [r.text for r in PaddleOCREngine._parse(raw)] == ["好", "也好"]
 
 
@@ -241,9 +259,7 @@ def test_uia_coordinates_are_not_offset() -> None:
     """UIA 本来就是屏幕坐标，再加一次偏移就错了。"""
     region = BBox(500, 300, 1300, 900)
     uia_element = UIElement(bbox=BBox(600, 400, 700, 440), source=ElementSource.UIA, text="保存")
-    detector = ElementDetector(
-        ocr_engine=None, uia_tree=FakeUIATree([uia_element]), parallel=False
-    )
+    detector = ElementDetector(ocr_engine=None, uia_tree=FakeUIATree([uia_element]), parallel=False)
 
     element = detector.detect(_shot(region), use_ocr=False).elements[0]
     assert element.bbox.as_tuple() == (600, 400, 700, 440)
@@ -270,9 +286,7 @@ def test_detection_summary_has_per_source_counts() -> None:
     region = BBox(0, 0, 800, 600)
     ocr = FakeOCREngine([OCRResult("a", BBox(0, 0, 20, 20), 0.9)], PASSTHROUGH)
     uia_element = UIElement(bbox=BBox(400, 400, 500, 440), source=ElementSource.UIA, text="b")
-    detector = ElementDetector(
-        ocr_engine=ocr, uia_tree=FakeUIATree([uia_element]), parallel=False
-    )
+    detector = ElementDetector(ocr_engine=ocr, uia_tree=FakeUIATree([uia_element]), parallel=False)
 
     result = detector.detect(_shot(region))
     summary = result.summary()
@@ -335,7 +349,9 @@ class FakeRect:
 
 
 class FakeNode:
-    def __init__(self, name="", control_type="ButtonControl", rect=(0, 0, 100, 40), offscreen=False):
+    def __init__(
+        self, name="", control_type="ButtonControl", rect=(0, 0, 100, 40), offscreen=False
+    ):
         self.Name = name
         self.ControlTypeName = control_type
         self.BoundingRectangle = FakeRect(*rect) if rect else None
@@ -382,7 +398,10 @@ def test_unnamed_interactive_kept(tree: UIATree) -> None:
 
 
 def test_node_outside_clip_rejected(tree: UIATree) -> None:
-    assert tree._to_element(FakeNode(name="远处", rect=(5000, 5000, 5100, 5040)), BBox(0, 0, 800, 600)) is None
+    assert (
+        tree._to_element(FakeNode(name="远处", rect=(5000, 5000, 5100, 5040)), BBox(0, 0, 800, 600))
+        is None
+    )
 
 
 def test_valid_node_carries_metadata(tree: UIATree) -> None:
@@ -456,7 +475,9 @@ def test_draw_elements_handles_empty_list() -> None:
 def test_label_at_top_edge_does_not_crash() -> None:
     """贴着屏幕顶部的元素（菜单栏）标签没有向上的空间，必须改画到框内。"""
     image = _canvas(200, 300)
-    top_element = [UIElement(bbox=BBox(0, 0, 100, 20), source=ElementSource.UIA, text="文件", index=1)]
+    top_element = [
+        UIElement(bbox=BBox(0, 0, 100, 20), source=ElementSource.UIA, text="文件", index=1)
+    ]
     assert draw_elements(image, top_element).shape == image.shape
 
 
@@ -478,3 +499,84 @@ def test_save_annotated_handles_chinese_path(tmp_path) -> None:
     path = tmp_path / "中文目录" / "截图.png"
     save_annotated(_canvas(), _elements(), str(path))
     assert path.exists() and path.stat().st_size > 0
+
+
+# ===================================================================== #
+# OCR 引擎的环境适配 —— 回归测试
+#
+# 这一组锁的是 M1 期间一个静默故障：PaddleOCR 在本机因 oneDNN 的 PIR
+# bug 一推理就崩，而 `is_available()` 只验构造、返回 True，于是采集脚本
+# 以为 OCR 可用、实际一个框都没出，图集里 `ocr_raw` 连续三次是 0，双通
+# 道悄悄退化成单通道。绕过方式当时只写进了文档（"每次新开终端手动设一
+# 遍环境变量"），没进代码。
+#
+# 结论：环境的坑要用代码堵，并且要有测试盯着。
+# ===================================================================== #
+
+
+def test_onednn_workaround_sets_env(monkeypatch) -> None:
+    """oneDNN 开关必须由代码设置，不能依赖使用者记得设环境变量。"""
+    monkeypatch.delenv("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", raising=False)
+    PaddleOCREngine._disable_onednn()
+    assert os.environ["PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT"] == "False"
+
+
+def test_onednn_workaround_respects_user_override(monkeypatch) -> None:
+    """用户显式设过就不覆盖——排查问题时需要能把它开回去。"""
+    monkeypatch.setenv("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "True")
+    PaddleOCREngine._disable_onednn()
+    assert os.environ["PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT"] == "True"
+
+
+def test_is_available_false_when_inference_raises(monkeypatch) -> None:
+    """构造成功但推理崩溃，必须判为不可用。
+
+    这正是 oneDNN bug 的形态。`is_available()` 返回 True 而 `recognize()`
+    崩溃，比老老实实返回 False 更坏——调用方会按可用来编排流程。
+    """
+    engine = PaddleOCREngine()
+    monkeypatch.setattr(engine, "_ensure_loaded", lambda: object())
+    monkeypatch.setattr(
+        engine,
+        "_raw_recognize",
+        lambda image: (_ for _ in ()).throw(
+            NotImplementedError("ConvertPirAttribute2RuntimeAttribute")
+        ),
+    )
+    assert engine.is_available() is False
+
+
+def test_is_available_true_when_probe_succeeds(monkeypatch) -> None:
+    engine = PaddleOCREngine()
+    monkeypatch.setattr(engine, "_ensure_loaded", lambda: object())
+    monkeypatch.setattr(engine, "_raw_recognize", lambda image: [])
+    assert engine.is_available() is True
+
+
+def test_screenshot_tuning_disables_document_modules() -> None:
+    """UVDoc 去弯曲与文本行方向分类是给拍照文档用的，截图上实测会掉框。"""
+    kwargs = PaddleOCREngine()._tuned_kwargs()
+    assert kwargs["use_doc_unwarping"] is False
+    assert kwargs["use_doc_orientation_classify"] is False
+    assert kwargs["use_textline_orientation"] is False
+
+
+def test_screenshot_tuning_can_be_turned_off() -> None:
+    """对照实验需要能跑出厂默认配置。"""
+    assert PaddleOCREngine(screenshot_tuned=False).screenshot_tuned is False
+
+
+def test_det_limit_side_len_is_configurable() -> None:
+    """整屏截图的 OCR 耗时几乎完全由这个值决定，必须可调。"""
+    assert PaddleOCREngine(det_limit_side_len=736)._tuned_kwargs()["text_det_limit_side_len"] == 736
+
+
+def test_default_preprocess_does_not_upscale() -> None:
+    """2× 超分在整屏截图上实测是净亏损（+51s 换 +1 框），已移出默认。"""
+    assert DEFAULT.upscale == 1.0
+    assert "upscale" not in " ".join(DEFAULT.enabled_steps())
+
+
+def test_upscale2x_config_still_available() -> None:
+    """对照实验的一个臂，保留是为了让"超分帮倒忙"这个结论可复现。"""
+    assert UPSCALE2X.upscale == 2.0

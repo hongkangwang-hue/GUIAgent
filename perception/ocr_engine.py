@@ -149,36 +149,106 @@ class PaddleOCREngine(OCREngine):
         min_confidence: float = 0.5,
         lang: str = "ch",
         use_gpu: bool = False,
+        screenshot_tuned: bool = True,
+        det_limit_side_len: int = 960,
     ) -> None:
         super().__init__(config, min_confidence)
         self.lang = lang
         #: 默认 CPU。GPU 相关检查在 M1 是警告项，OCR 不该被 Blackwell
         #: 工具链问题阻塞（见 M1 前置状态确认）
         self.use_gpu = use_gpu
+        #: 按截图场景调优（关文档矫正模块 + mobile 检测识别模型）。
+        #: 置 False 走 PaddleOCR 的出厂默认，对照实验需要这一组。
+        self.screenshot_tuned = screenshot_tuned
+        #: 检测网络的输入边长上限。整屏截图的耗时几乎完全由这个值决定。
+        self.det_limit_side_len = det_limit_side_len
         self._ocr = None
+
+    @staticmethod
+    def _disable_onednn() -> None:
+        """关闭 PaddleX 的 oneDNN 默认开关。
+
+        paddlepaddle 3.3.1 的 PIR 新执行器在 oneDNN 路径上有 bug，文本
+        检测模型一推理就抛::
+
+            NotImplementedError: (Unimplemented) ConvertPirAttribute2RuntimeAttribute
+            not support [pir::ArrayAttribute<pir::DoubleAttribute>]
+
+        注意 ``FLAGS_use_mkldnn`` 与 ``FLAGS_enable_pir_api`` **都不管用**，
+        PaddleX 读的是自己的这个环境变量。
+
+        这件事**必须在代码里做，不能只写进文档**。它此前只记录在
+        《新机器实测数据》第 7 节，要求"每次新开终端手动设一遍"——结果
+        就是图集里三次采集的 ``ocr_raw`` 全是 0，双通道退化成了单通道而
+        没人发现。环境的坑要用代码堵，不能用备忘录堵。
+        """
+        import os
+
+        os.environ.setdefault("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "False")
+
+    def _tuned_kwargs(self) -> dict:
+        """截图场景的调优参数（PaddleOCR 3.x）。
+
+        实测依据（2560×1600 桌面截图，CPU）：
+
+        | 配置 | 耗时 | 框数 |
+        |---|---|---|
+        | 出厂默认（含 UVDoc + textline_ori） | 44.68s | 87 |
+        | 换 mobile 检测识别模型 | 27.92s | 136 |
+        | 再限 det 边长 960 | **18.86s** | 112 |
+
+        ``UVDoc``（文档去弯曲）与 ``PP-LCNet_x1_0_textline_ori``（文本行
+        方向分类）是给**拍照文档**用的：矫正透视形变、纠正旋转的文本行。
+        屏幕截图既不弯也不倒，这两步不只是白跑，实测还会**掉框**。
+        """
+        return {
+            "use_doc_orientation_classify": False,
+            "use_doc_unwarping": False,
+            "use_textline_orientation": False,
+            "text_detection_model_name": "PP-OCRv5_mobile_det",
+            "text_recognition_model_name": "PP-OCRv5_mobile_rec",
+            "text_det_limit_side_len": self.det_limit_side_len,
+            "text_det_limit_type": "max",
+        }
 
     def _ensure_loaded(self):
         if self._ocr is not None:
             return self._ocr
+        self._disable_onednn()
         from paddleocr import PaddleOCR
 
-        # PaddleOCR 2.x 与 3.x 的构造参数不同，逐个试而不是猜版本
-        for kwargs in (
+        # PaddleOCR 2.x 与 3.x 的构造参数不同，逐个试而不是猜版本。
+        # 调优参数只有 3.x 认，因此排在最前，失败就逐级退回。
+        candidates: list[dict] = []
+        if self.screenshot_tuned:
+            candidates.append({"lang": self.lang, **self._tuned_kwargs()})
+        candidates += [
             {"use_angle_cls": True, "lang": self.lang, "use_gpu": self.use_gpu, "show_log": False},
             {"use_angle_cls": True, "lang": self.lang, "use_gpu": self.use_gpu},
             {"lang": self.lang},
-        ):
+        ]
+
+        last: Exception | None = None
+        for kwargs in candidates:
             try:
                 self._ocr = PaddleOCR(**kwargs)
-                logger.info("PaddleOCR 已加载：%s", kwargs)
+                logger.info("PaddleOCR 已加载：%s", sorted(kwargs))
                 return self._ocr
             except (TypeError, ValueError) as exc:
                 last = exc
         raise RuntimeError(f"PaddleOCR 构造失败，请检查版本：{last}")
 
     def is_available(self) -> bool:
+        """构造 **并试推理一次**。
+
+        只验构造是不够的：oneDNN 那个 bug 在构造阶段毫无征兆，直到第一次
+        真正推理才抛。``is_available()`` 返回 True 而 ``recognize()`` 崩溃，
+        是比"不可用"更坏的一种状态——调用方会按可用来编排流程。
+        """
         try:
             self._ensure_loaded()
+            probe = np.zeros((32, 64, 3), dtype=np.uint8)
+            self._raw_recognize(probe)
             return True
         except Exception as exc:  # noqa: BLE001
             logger.warning("PaddleOCR 不可用：%s", exc)
@@ -295,8 +365,15 @@ class EasyOCREngine(OCREngine):
         return self._reader
 
     def is_available(self) -> bool:
+        """构造并试推理一次，口径与 `PaddleOCREngine.is_available` 一致。
+
+        两个引擎的可用性判定必须同口径，否则对照实验里"某引擎不可用"这
+        条结论本身就不可比。
+        """
         try:
             self._ensure_loaded()
+            probe = np.zeros((32, 64, 3), dtype=np.uint8)
+            self._raw_recognize(probe)
             return True
         except Exception as exc:  # noqa: BLE001
             logger.warning("EasyOCR 不可用：%s", exc)

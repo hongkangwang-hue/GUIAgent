@@ -9,9 +9,27 @@
 锯齿信息丢失，模型反而认不出来。经典的"二值化提升 OCR"经验来自 Tesseract
 时代的传统算法，对深度学习 OCR 不一定成立。
 
-因此默认配置只做温和的增强（灰度 + CLAHE + 超分），二值化默认关闭。
+因此默认配置只做温和的增强（灰度 + CLAHE），二值化与超分默认关闭。
 真正该开哪几步，由 M1 的双引擎对照实验和 M4 的准确率优化用**实测失败
 案例**来决定——M4 明确要求"改动必须有失败案例支撑，禁止凭直觉调参数"。
+
+## 2× 超分为什么从默认里去掉了（M1 实测）
+
+同一张 2560×1600 桌面截图，PaddleOCR CPU，`min_confidence=0.5`：
+
+| 配置 | 耗时 | 框数 | 平均置信度 |
+|---|---|---|---|
+| `UPSCALE2X`（灰度+CLAHE+2× 超分） | 93.32s | 65 | — |
+| 灰度+CLAHE，不超分 | 43.51s | 64 | 0.9804 |
+| `PASSTHROUGH`（空跑） | **42.08s** | 64 | **0.9873** |
+
+2× 超分用 **+51 秒换 +1 个框**，CLAHE 还把平均置信度压低了 0.7 个点。
+
+原因是尺度错配：2560×1600 放大成 5120×3200 后超过 PaddleOCR 的
+``max_side_limit=4000``，它自己又缩回来——放大再缩小，白付一次三次样条
+插值的钱，信息一点没多。"放大能救小字"这条经验对**局部裁剪**成立，对
+整屏截图不成立。M4 若要对小控件做局部 OCR，应在裁剪后单独开超分，而不
+是把整屏图放大。
 """
 
 from __future__ import annotations
@@ -34,8 +52,10 @@ class PreprocessConfig:
     clahe: bool = True
     clahe_clip_limit: float = 2.0
     clahe_grid_size: int = 8
-    #: 放大倍数。小字号是 GUI 截图 OCR 的主要失败源，放大比任何滤波都管用
-    upscale: float = 2.0
+    #: 放大倍数。**默认 1.0（不放大）**，理由见模块文档的实测表。
+    #: 小字号确实是 GUI 截图 OCR 的主要失败源，但那条经验适用于**局部裁剪**；
+    #: 对整屏截图，放大会先撞上 OCR 自己的 max_side_limit 再被缩回去。
+    upscale: float = 1.0
     #: 自适应二值化。**默认关闭**，理由见模块文档
     binarize: bool = False
     binarize_block_size: int = 11
@@ -63,8 +83,12 @@ class PreprocessConfig:
 #: 预处理到底是帮忙还是帮倒忙。
 PASSTHROUGH = PreprocessConfig(grayscale=False, clahe=False, upscale=1.0)
 
-#: 默认：温和增强
+#: 默认：温和增强，**不放大**
 DEFAULT = PreprocessConfig()
+
+#: 灰度 + CLAHE + 2× 超分。M1 之前的默认值，现降级为对照实验的一个臂——
+#: 实测它在整屏截图上是净亏损（见模块文档），保留是为了让这个结论可复现。
+UPSCALE2X = PreprocessConfig(upscale=2.0)
 
 #: 激进：全开。留给 M4 在有失败案例支撑时试
 AGGRESSIVE = PreprocessConfig(binarize=True, denoise=True, upscale=2.0)

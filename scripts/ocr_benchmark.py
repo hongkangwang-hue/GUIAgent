@@ -7,7 +7,9 @@
 
 - `passthrough`：什么都不做。**这是对照组，不能省**——没有它就无法证明
   预处理到底是帮忙还是帮倒忙
-- `default`：灰度 + CLAHE + 2× 超分（温和增强）
+- `default`：灰度 + CLAHE（温和增强，**不超分**）
+- `upscale2x`：再加 2× 超分。M1 之前的默认值，实测在整屏截图上净亏损
+  （+51s 换 +1 框），降级为对照臂以便复现该结论
 - `aggressive`：再加二值化与去噪
 
 现代 OCR 的检测识别网络是在自然图像上训练的，**喂二值化图往往更差**：
@@ -42,10 +44,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from perception.preprocess import AGGRESSIVE, DEFAULT, PASSTHROUGH  # noqa: E402
+from perception.preprocess import AGGRESSIVE, DEFAULT, PASSTHROUGH, UPSCALE2X  # noqa: E402
 from perception.types import BBox  # noqa: E402
 
-CONFIGS = {"passthrough": PASSTHROUGH, "default": DEFAULT, "aggressive": AGGRESSIVE}
+CONFIGS = {
+    "passthrough": PASSTHROUGH,
+    "default": DEFAULT,
+    "upscale2x": UPSCALE2X,
+    "aggressive": AGGRESSIVE,
+}
 DEFAULT_DIR = Path("outputs/gallery")
 
 
@@ -53,9 +60,9 @@ def is_cjk(char: str) -> bool:
     """字符是否属于中日韩统一表意文字区。"""
     code = ord(char)
     return (
-        0x4E00 <= code <= 0x9FFF      # 基本区
-        or 0x3400 <= code <= 0x4DBF   # 扩展 A
-        or 0xF900 <= code <= 0xFAFF   # 兼容表意文字
+        0x4E00 <= code <= 0x9FFF  # 基本区
+        or 0x3400 <= code <= 0x4DBF  # 扩展 A
+        or 0xF900 <= code <= 0xFAFF  # 兼容表意文字
     )
 
 
@@ -81,9 +88,7 @@ def char_accuracy(predicted: str, truth: str) -> float:
     for i, pc in enumerate(predicted, start=1):
         current = [i]
         for j, tc in enumerate(truth, start=1):
-            current.append(
-                min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (pc != tc))
-            )
+            current.append(min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (pc != tc)))
         previous = current
     return max(0.0, 1.0 - previous[-1] / len(truth))
 
@@ -129,9 +134,7 @@ def score_against_gt(results, gt: dict) -> tuple[dict, int, int]:
         buckets[classify(truth_text)].append(char_accuracy(best_text.strip(), truth_text))
 
     accuracy = {
-        lang: round(sum(scores) / len(scores), 4)
-        for lang, scores in buckets.items()
-        if scores
+        lang: round(sum(scores) / len(scores), 4) for lang, scores in buckets.items() if scores
     }
     total = sum(len(v) for v in buckets.values())
     return accuracy, matched, total
