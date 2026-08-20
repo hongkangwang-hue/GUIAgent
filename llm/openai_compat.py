@@ -92,9 +92,26 @@ RETRYABLE_HINTS = (
     "temporarily",
 )
 
-#: 这些一看就别重试——重试多少次都一样，只会多烧时间
+#: 这些一看就别重试——重试多少次都一样，只会多烧时间。
+#:
+#: **顺序有意义**，dict 按插入序遍历，先命中的先返回。额度类排在鉴权
+#: 之前是因为两者的 HTTP 状态码会撞：百炼的免费额度耗尽返回的是
+#: ``403 AllocationQuota.FreeTierOnly``，若先判 auth，"403" 一命中就
+#: 会把一个充值就能解决的问题报成"API key 无效"，让人去查错方向。
+#: 两者都不可重试，所以不影响控制流——但会影响 M3 的失败原因统计。
 FATAL_HINTS = {
-    "insufficient_balance": ("余额不足", "欠费", "insufficient", "balance", "quota exceeded"),
+    "quota": (
+        "余额不足",
+        "欠费",
+        "insufficient",
+        "balance",
+        "quota exceeded",
+        "quota exhausted",
+        "allocationquota",
+        "freetieronly",
+        "arrearage",
+        "billing",
+    ),
     "auth": ("unauthorized", "invalid api key", "authentication", "401", "403", "forbidden"),
     "bad_request": ("invalid_request", "400", "model not found", "does not exist"),
 }

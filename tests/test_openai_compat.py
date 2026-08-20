@@ -301,7 +301,7 @@ def test_transient_errors_are_retryable(message) -> None:
 @pytest.mark.parametrize(
     ("message", "expected"),
     [
-        ("Insufficient balance", "insufficient_balance"),
+        ("Insufficient balance", "quota"),
         ("401 Unauthorized", "auth"),
         ("Invalid API key provided", "auth"),
         ("model not found", "bad_request"),
@@ -313,13 +313,31 @@ def test_fatal_errors_are_not_retried(message, expected) -> None:
     assert kind == expected
 
 
+def test_quota_beats_auth_on_shared_status_code() -> None:
+    """额度耗尽与鉴权失败的 HTTP 码会撞，必须先判额度。
+
+    百炼实测返回 403 + AllocationQuota.FreeTierOnly。若先判 auth，"403"
+    一命中就报成"API key 无效"，让人去查错方向——真正要做的是充值或关掉
+    "仅用免费额度"开关。两者都不可重试，所以不影响控制流，但会让 M3 的
+    失败原因统计归错类。
+    """
+    real_message = (
+        "Error code: 403 - Free quota exhausted. To continue accessing the model "
+        "on a paid basis, please add funds or disable the use-free-tier-only mode "
+        "in the management console. code=AllocationQuota.FreeTierOnly"
+    )
+    kind, retryable = classify_error(RuntimeError(real_message))
+    assert kind == "quota"
+    assert retryable is False
+
+
 def test_fatal_wins_over_transient() -> None:
     """限流响应里也可能带 connection 字样。
 
     顺序反了会把余额不足当成网络抖动，一直重试到把重试次数耗光。
     """
     kind, retryable = classify_error(RuntimeError("connection closed: insufficient balance"))
-    assert kind == "insufficient_balance"
+    assert kind == "quota"
     assert retryable is False
 
 
