@@ -52,6 +52,7 @@ from control.executor import ActionExecutor  # noqa: E402
 from perception.capture import ScreenCapturer  # noqa: E402
 from perception.coordinate import CoordinateScaler  # noqa: E402
 from perception.dpi import describe as dpi_describe  # noqa: E402
+from perception.dpi import enable_dpi_awareness  # noqa: E402
 from perception.types import Point  # noqa: E402
 from perception.uia_tree import UIATree  # noqa: E402
 
@@ -422,6 +423,16 @@ def main() -> int:
     parser.add_argument("--note", default="", help="备注，比如 DPI 档位或运行环境")
     args = parser.parse_args()
 
+    # **必须先启用 DPI 感知，再查 DPI。**
+    #
+    # `dpi_describe()` 本身就是一次坐标查询，而 `perception/dpi.py` 开头
+    # 写着"必须在任何截图或坐标查询之前调用 enable_dpi_awareness()"——
+    # 不启用时 Windows 会对进程撒谎：150% 缩放的机器上会报回 100%/96 DPI。
+    #
+    # 原来这里依赖 `ScreenCapturer.__init__` 顺手启用，但那发生在下面的
+    # with 块里，比这一行晚。后果不是显示难看：验收标准 3 要求三档 DPI
+    # 各跑一次，而报告里永远写 100%，三次记录就无法区分，证据等于作废。
+    enable_dpi_awareness()
     dpi = dpi_describe()
     print("=" * 70)
     print("控制层真机验证")
