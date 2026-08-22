@@ -530,6 +530,11 @@ def main() -> int:
         help="结果写入的报告文件。传空字符串则不写",
     )
     parser.add_argument("--note", default="", help="备注，比如 DPI 档位或运行环境")
+    parser.add_argument(
+        "--allow-note-mismatch",
+        action="store_true",
+        help="即使 --note 里的百分比与实测 DPI 不符也照常记录",
+    )
     args = parser.parse_args()
 
     # **必须先启用 DPI 感知，再查 DPI。**
@@ -543,6 +548,22 @@ def main() -> int:
     # 各跑一次，而报告里永远写 100%，三次记录就无法区分，证据等于作废。
     enable_dpi_awareness()
     dpi = dpi_describe()
+
+    if not _note_matches_dpi(args.note, dpi) and not args.allow_note_mismatch:
+        stated = _stated_percent(args.note)
+        print("=" * 70)
+        print(f"备注写的是 {stated}%，但实测 DPI 缩放是 {dpi['scale_factor']:.0%}。")
+        print()
+        print("多半是显示缩放没真正生效：改完设置后本进程要重新启动才会读到新值，")
+        print("多显示器时还要确认改的是当前这块屏。注销重登最稳妥。")
+        print()
+        print("本次不记录 —— M1 验收标准 3 要求三档 DPI 各一次，档位标错的记录")
+        print("会让人以为测过了而实际没测，比没有记录更糟。")
+        print()
+        print("确实要记（比如备注里的百分比不是指 DPI），加 --allow-note-mismatch。")
+        print("=" * 70)
+        return 2
+
     print("=" * 70)
     print("控制层真机验证")
     print(
@@ -615,6 +636,32 @@ def main() -> int:
         print(f"结果已追加到 {path}")
 
     return 1 if failed else 0
+
+
+def _stated_percent(note: str) -> int | None:
+    """从备注里抠出百分比数字，比如 "宿主机 125% DPI" → 125。"""
+    import re
+
+    match = re.search(r"(\d{2,3})\s*%", note)
+    return int(match.group(1)) if match else None
+
+
+def _note_matches_dpi(note: str, dpi: dict) -> bool:
+    """备注里声明的档位与实测 DPI 是否一致。
+
+    ## 为什么要拦这一下
+
+    实测踩到的：连着两次用 ``--note "100% DPI"`` 和 ``--note "125% DPI"``
+    跑，脚本却都检测到 150% —— 显示缩放压根没改成功。三条记录看上去是
+    三档齐了，实际全是同一档。
+
+    M1 验收标准 3 要求三档 DPI 各测一次。**档位标错的记录比没有记录更糟**：
+    它让人以为测过了。所以宁可拒绝写入，也不留一条假证据。
+    """
+    stated = _stated_percent(note)
+    if stated is None:
+        return True  # 备注里没提百分比，不管
+    return abs(stated - round(dpi["scale_factor"] * 100)) <= 2
 
 
 def _write_report(path: Path, results, dpi: dict, region, note: str) -> Path:
