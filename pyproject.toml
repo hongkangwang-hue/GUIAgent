@@ -31,5 +31,5 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["perception", "control", "llm", "grounding", "core", "agent", "cli"]
+source = ["perception", "control", "llm", "grounding", "core", "agent", "cli", "data"]
 omit = ["*/__init__.py"]
