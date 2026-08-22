@@ -83,8 +83,50 @@ def is_dpi_aware() -> bool:
     return _awareness_enabled
 
 
+def get_monitor_dpi(monitor_handle=None) -> int:
+    """主显示器的**实时** DPI。100% 缩放为 96。
+
+    ## 与 `get_system_dpi` 的区别，以及为什么要区分
+
+    ``GetDpiForSystem()`` 返回的是**会话级**系统 DPI —— 它在用户登录时
+    就确定了，**改显示缩放不会让它变**，必须注销重登。
+
+    ``GetDpiForMonitor(MDT_EFFECTIVE_DPI)`` 是每显示器级的，改完设置立即
+    生效，也能正确反映多显示器下各屏不同缩放的情况。
+
+    M1 验收标准 3 要求在 100%/125%/150% 三档缩放下各验一次坐标正确性。
+    用会话级的值会出现这种局面：改了缩放、坐标链确实按新缩放工作了，
+    但记录里的档位还写着旧值 —— 三档记录看似齐了，实际标错了两档。
+    """
+    if not IS_WINDOWS:
+        return int(BASE_DPI)
+    try:
+        import ctypes.wintypes as wintypes
+
+        handle = monitor_handle
+        if handle is None:
+            # MONITOR_DEFAULTTOPRIMARY = 1
+            handle = ctypes.windll.user32.MonitorFromPoint(wintypes.POINT(0, 0), 1)
+
+        dpi_x, dpi_y = ctypes.c_uint(), ctypes.c_uint()
+        # MDT_EFFECTIVE_DPI = 0，即"考虑了缩放设置之后"的有效 DPI
+        result = ctypes.windll.shcore.GetDpiForMonitor(
+            handle, 0, ctypes.byref(dpi_x), ctypes.byref(dpi_y)
+        )
+        if result == 0 and dpi_x.value:
+            return int(dpi_x.value)
+    except (AttributeError, OSError, ImportError):
+        # shcore.dll 是 Win8.1+ 才有的，更老的系统退回会话级
+        pass
+    return get_system_dpi()
+
+
 def get_system_dpi() -> int:
-    """系统 DPI。100% 缩放为 96。"""
+    """**会话级**系统 DPI。100% 缩放为 96。
+
+    注意它在登录时就固定了，改缩放后不更新。要拿实时值用
+    `get_monitor_dpi`。
+    """
     if not IS_WINDOWS:
         return int(BASE_DPI)
     try:
@@ -101,8 +143,11 @@ def get_system_dpi() -> int:
 
 
 def get_scale_factor() -> float:
-    """系统缩放比例。100% → 1.0，125% → 1.25，150% → 1.5。"""
-    return get_system_dpi() / BASE_DPI
+    """当前缩放比例。100% → 1.0，125% → 1.25，150% → 1.5。
+
+    取**实时**的每显示器 DPI，因此改完缩放设置立即反映，不需要注销重登。
+    """
+    return get_monitor_dpi() / BASE_DPI
 
 
 def describe() -> dict:
@@ -110,6 +155,9 @@ def describe() -> dict:
     return {
         "platform": sys.platform,
         "dpi_aware": _awareness_enabled,
-        "system_dpi": get_system_dpi(),
+        # 实时值，改缩放立即反映
+        "system_dpi": get_monitor_dpi(),
         "scale_factor": get_scale_factor(),
+        # 会话级值。与上面不一致，说明缩放改过但尚未注销重登
+        "session_dpi": get_system_dpi(),
     }
