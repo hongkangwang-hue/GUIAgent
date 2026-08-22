@@ -24,6 +24,7 @@ from core.loop import (
     STOP_GROUNDING_FAILED,
     STOP_MAX_ITERATIONS,
     STOP_PARSE_ERROR,
+    STOP_RESOLUTION_CHANGED,
     AgentLoop,
     LoopConfig,
 )
@@ -453,3 +454,46 @@ def test_usage_is_recorded_on_each_step(tmp_path) -> None:
     step = TrajectoryReader(writer.root).steps()[0]
     assert step.tokens["total_tokens"] == TokenUsage(1000, 50).total_tokens
     assert step.backend == "scripted"
+
+
+# ===================================================================== #
+# 分辨率被改掉
+# ===================================================================== #
+
+
+def test_loop_stops_when_screenshot_size_leaves_the_mapped_region() -> None:
+    """截图尺寸与坐标系区域不符时必须立刻停。
+
+    虚拟机上这事的成因通常是 VMware Tools 让客机分辨率跟随窗口大小——
+    拖一下窗口边框，1920×1080 就悄悄变成 1760×990，**没有任何提示**。
+    继续跑不会崩，只会产出一串系统性偏移的点击，看起来像模型定位不准。
+    """
+    from perception.types import BBox
+
+    loop, _, _ = build_loop([{"action": "left_click", "x": 10, "y": 20}])
+    # 假截图仍是 SCREEN 尺寸，把 scaler 换成按另一个分辨率建立的映射，
+    # 等价于"运行中分辨率被改掉了"
+    other = CoordinateScaler(BBox(0, 0, SCREEN.width + 160, SCREEN.height + 90))
+    other.register("planner", MODEL_W, MODEL_H)
+    loop.executor.scaler = other
+
+    result = loop.run_subtask("点击开始按钮")
+
+    assert result.status == STOP_RESOLUTION_CHANGED
+    assert f"{SCREEN.width + 160}×{SCREEN.height + 90}" in result.reason
+    assert result.records[0].error_type == "resolution_changed"
+
+
+def test_loop_runs_normally_when_region_matches() -> None:
+    """默认配置下区域是吻合的，闸门不该误伤——其余全部用例也都走这条路径。"""
+    loop, _, _ = build_loop([{"done": True}])
+    assert loop.run_subtask("随便什么").succeeded
+
+
+def test_scaler_region_matches() -> None:
+    from perception.types import BBox
+
+    scaler = CoordinateScaler(BBox(0, 0, 1920, 1080))
+    assert scaler.region_matches(1920, 1080)
+    assert not scaler.region_matches(1760, 990)
+    assert scaler.region.width == 1920

@@ -342,3 +342,28 @@ def test_payload_feeds_action_intent() -> None:
     action = intent.to_action()
     assert action.x == 512 and action.y == 384
     assert intent.needs_grounding is False
+
+
+# ===================================================================== #
+# 边界框形态的定位输出（M3 本地 grounding 模型）
+# ===================================================================== #
+
+
+def test_bbox_keyed_output_folds_to_center() -> None:
+    """视觉模型做定位时给框比给点更常见。
+
+    Qwen2.5-VL 的 grounding 示例输出就是 `{"bbox_2d": [...], "label": ...}`。
+    不认这个键的后果很隐蔽——模式 B 接上本地模型后每次定位都解析成"没有
+    坐标"，看着像模型不会定位，其实是它答对了没人听懂。
+    """
+    for key in ("bbox_2d", "bbox", "box_2d", "box"):
+        assert extract_point({key: [100, 200, 150, 240]}) == (125, 220), key
+
+
+def test_bbox_output_carries_label_without_confusing_the_parser() -> None:
+    assert extract_point({"bbox_2d": [10, 20, 30, 40], "label": "关闭按钮"}) == (20, 30)
+
+
+def test_explicit_xy_still_wins_over_bbox() -> None:
+    """两者都给时以 x/y 为准——那是模型明确指的点，框只是它的依据。"""
+    assert extract_point({"x": 7, "y": 8, "bbox_2d": [100, 200, 150, 240]}) == (7, 8)

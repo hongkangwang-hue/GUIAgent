@@ -61,8 +61,31 @@ DONE_KEYS = ("done", "finished", "complete", "completed", "is_done", "task_compl
 #: 参数容器。有些模型把参数套一层再给
 PARAM_KEYS = ("params", "parameters", "arguments", "args", "action_input", "input")
 
-#: 坐标对。``point`` / ``coordinate`` 是 Qwen-VL 系列的常见写法
-POINT_KEYS = ("point", "coordinate", "coordinates", "position", "pos", "xy", "location")
+#: 坐标对。``point`` / ``coordinate`` 是 Qwen-VL 系列的常见写法。
+#:
+#: **末尾几个 bbox 键名是给 M3 的本地 grounding 模型留的。** 视觉模型做定位
+#: 时给框比给点更常见，Qwen2.5-VL 的 grounding 示例输出就是
+#: ``{"bbox_2d": [x1, y1, x2, y2], "label": "…"}`` 这种形状。四个数会被
+#: `extract_point` 折成中心点——点击目标元素的中心正是我们要的行为。
+#:
+#: 不收这几个键的后果很隐蔽：模式 B 接上本地模型后，**每一次定位都会解析成
+#: "没有坐标"**，表现为 grounding_failed，看上去像"本地模型不会定位"，
+#: 而实际上它答对了、只是没人听懂。M3 那周排查这个要花掉半天。
+#:
+#: M3 接线时仍应拿真实输出核对一遍键名，这里只是把已知的几种先兜住。
+POINT_KEYS = (
+    "point",
+    "coordinate",
+    "coordinates",
+    "position",
+    "pos",
+    "xy",
+    "location",
+    "bbox_2d",
+    "bbox",
+    "box_2d",
+    "box",
+)
 
 #: 动作类型的常见同义写法 → 本项目的动作名。
 #:

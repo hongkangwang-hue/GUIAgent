@@ -84,9 +84,7 @@ class CoordinateScaler:
     def from_monitor(cls, monitor: dict) -> CoordinateScaler:
         """从 mss 的 monitor 字典构造（含 left/top/width/height）。"""
         return cls(
-            BBox.from_xywh(
-                monitor["left"], monitor["top"], monitor["width"], monitor["height"]
-            )
+            BBox.from_xywh(monitor["left"], monitor["top"], monitor["width"], monitor["height"])
         )
 
     @property
@@ -116,7 +114,12 @@ class CoordinateScaler:
             logger.warning(
                 "坐标系 %r (%d×%d) 在 %d×%d 区域上的往返误差上界为 %.2f px，超过 2px 验收标准。"
                 "降分辨率过于激进时定位精度会被舍入吃掉。",
-                name, width, height, self._region.width, self._region.height, bound,
+                name,
+                width,
+                height,
+                self._region.width,
+                self._region.height,
+                bound,
             )
         return space
 
@@ -227,6 +230,20 @@ class CoordinateScaler:
     def is_in_region(self, point: Point) -> bool:
         """真实坐标是否落在截图区域内。动作执行前的越界检查用这个。"""
         return self._region.contains(point)
+
+    def region_matches(self, width: int, height: int) -> bool:
+        """截图的实际尺寸是否与建立映射时的区域一致。
+
+        **这是防"分辨率被人偷偷改掉"的闸门。** 虚拟机上尤其要防：
+        VMware Tools 装好后默认会让客机分辨率自动适配窗口大小——拖一下
+        VMware 的窗口边框，客机就可能从 1920×1080 变成 1760×990，
+        而且**没有任何提示**。
+
+        这类错配不会崩，只会让每一次点击都系统性偏移，看起来像"模型定位
+        不准"。M1 已经吃过一次同形态的亏（模型坐标系被当成图像尺寸），
+        那次查了三组实验才定位到。所以这里改成开机即查、每帧都查。
+        """
+        return (width, height) == (self._region.width, self._region.height)
 
     def __repr__(self) -> str:
         names = ", ".join(f"{s.name}({s.width}×{s.height})" for s in self._spaces.values())

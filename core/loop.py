@@ -106,6 +106,11 @@ STOP_ACTION_FAILED = "action_failed"
 STOP_EMERGENCY = "emergency_stopped"
 STOP_BACKEND_ERROR = "backend_error"
 STOP_PARSE_ERROR = "parse_error"
+#: 截图尺寸与坐标系建立时的区域不一致。**虚拟机上最常见的成因是分辨率被
+#: 自动改掉**（VMware Tools 默认让客机分辨率跟随窗口大小）。继续跑只会
+#: 产出一串系统性偏移的点击，且看起来像模型定位不准——立刻停，比事后
+#: 对着一堆偏移量猜便宜得多。
+STOP_RESOLUTION_CHANGED = "resolution_changed"
 
 #: grounding 未被调用（动作不涉及坐标）。与"调用了但没找到"必须分开，
 #: 否则 M3 的定位成功率会被一堆 type / wait 动作稀释
@@ -271,6 +276,13 @@ class AgentLoop:
         latency.screenshot_ms += (time.perf_counter() - start) * 1000.0
         record.screenshot_before = self._save_frame(before, step_index, "before")
 
+        mismatch = self._resolution_mismatch(before)
+        if mismatch:
+            record.execution_status = "error"
+            record.error, record.error_type = mismatch, "resolution_changed"
+            record.latency = latency.as_dict()
+            return self._commit(record), (STOP_RESOLUTION_CHANGED, mismatch)
+
         # --- 2. 问模型 ---
         try:
             intent, retries = self._predict(subtask, before)
@@ -365,6 +377,24 @@ class AgentLoop:
     # ------------------------------------------------------------------ #
     # 各步的细节
     # ------------------------------------------------------------------ #
+
+    def _resolution_mismatch(self, screenshot: Screenshot) -> str:
+        """截图尺寸与坐标系区域不符时返回说明，相符返回空串。
+
+        执行器没挂 scaler 时跳过检查——单元测试里的假执行器就是这种情况。
+        """
+        scaler = getattr(self.executor, "scaler", None)
+        if scaler is None or not hasattr(scaler, "region_matches"):
+            return ""
+        if scaler.region_matches(screenshot.width, screenshot.height):
+            return ""
+        region = scaler.region
+        return (
+            f"截图尺寸 {screenshot.width}×{screenshot.height} 与坐标系建立时的区域 "
+            f"{region.width}×{region.height} 不一致。分辨率很可能在运行中被改掉了"
+            "（虚拟机请检查是否开着「自动调整客机分辨率」）。继续执行会让每次点击"
+            "都系统性偏移，因此在此终止。"
+        )
 
     def _predict(self, subtask: str, screenshot: Screenshot) -> tuple[ActionIntent, int]:
         """调用模型，必要时重试。返回 (意图, 重试次数)。

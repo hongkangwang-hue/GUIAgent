@@ -231,6 +231,15 @@ class TrajectoryMeta:
     verify_note: str = ""
     screen_region: list = field(default_factory=list)
     model_space: dict = field(default_factory=dict)
+    #: **这条轨迹跑在什么环境里。**
+    #:
+    #: 分辨率、DPI 缩放、截图引擎——三者任何一个变了，成功率与延迟都不再
+    #: 可比。而 M5 的结题报告要引用 M2 的成本与成功率作参照，跨了三周半，
+    #: 中间还会恢复无数次快照。
+    #:
+    #: 「两次跑在同一环境」如果只靠人记得核对，那它是个**假设**；记进每条
+    #: 轨迹，它才是**事实**，事后还能查。
+    environment: dict = field(default_factory=dict)
     error: str = ""
     meta: dict = field(default_factory=dict)
 

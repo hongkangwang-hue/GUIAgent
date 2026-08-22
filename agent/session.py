@@ -281,6 +281,7 @@ class Session:
         writer.meta.model = self.backend.model
         writer.meta.grounding_backend = getattr(self.grounding, "name", "")
         writer.meta.mode = "A"
+        writer.meta.environment = self._describe_environment()
         writer.meta.meta = {**self.config.as_dict(), "dry_run": self._dry_run()}
         writer.write_meta()
 
@@ -295,6 +296,31 @@ class Session:
             raise
         finally:
             result.cost = self.backend.get_cost()
+
+    def _describe_environment(self) -> dict:
+        """记下这条轨迹跑在什么环境里。
+
+        分辨率、DPI、截图引擎三者任一变化都会让成功率与延迟失去可比性。
+        采集失败不能影响任务——所以整段包在 try 里，拿不到就留空。
+        """
+        env: dict = {}
+        try:
+            from perception.dpi import describe as dpi_describe
+
+            env["dpi"] = dpi_describe()
+        except Exception as exc:  # noqa: BLE001
+            env["dpi_error"] = str(exc)[:120]
+
+        capturer = getattr(self, "capturer", None)
+        engine = getattr(capturer, "engine_name", None) or getattr(capturer, "engine", None)
+        if engine is not None:
+            env["capture_engine"] = str(engine)
+
+        scaler = getattr(self.executor, "scaler", None)
+        if scaler is not None and hasattr(scaler, "region"):
+            region = scaler.region
+            env["resolution"] = f"{region.width}x{region.height}"
+        return env
 
     def _run_inner(
         self,

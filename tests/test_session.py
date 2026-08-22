@@ -364,3 +364,39 @@ def test_result_as_dict_is_serializable(tmp_path) -> None:
     payload = session.run("打开记事本").as_dict()
     json.dumps(payload, ensure_ascii=False)  # 抛异常就是回归
     assert payload["succeeded_subtasks"] == 2
+
+
+def test_trajectory_records_the_environment_it_ran_in(tmp_path) -> None:
+    """分辨率 / DPI / 截图引擎必须进轨迹。
+
+    M5 的结题报告要引用 M2 的成本与成功率作参照，跨了三周半，中间还会恢复
+    无数次快照。「两次跑在同一环境」如果只靠人记得核对，那是个**假设**；
+    记进每条轨迹，它才是**事实**，而且事后能查。
+    """
+    session, _ = build(two_subtask_script(), tmp_path)
+    result = session.run("打开记事本")
+
+    from core.trajectory import TrajectoryReader
+
+    env = TrajectoryReader(result.trajectory_dir).meta.environment
+    assert env, "环境信息不能为空"
+    assert env["resolution"] == f"{SCREEN.width}x{SCREEN.height}"
+    assert "dpi" in env or "dpi_error" in env
+
+
+def test_environment_capture_never_breaks_the_run(tmp_path, monkeypatch) -> None:
+    """采集环境信息失败不该带倒任务——那时可能正在操作真实桌面。"""
+    import perception.dpi as dpi_module
+
+    def boom() -> dict:
+        raise RuntimeError("DPI 探测炸了")
+
+    monkeypatch.setattr(dpi_module, "describe", boom)
+
+    session, _ = build(two_subtask_script(), tmp_path)
+    result = session.run("打开记事本")
+
+    from core.trajectory import TrajectoryReader
+
+    env = TrajectoryReader(result.trajectory_dir).meta.environment
+    assert "DPI 探测炸了" in env["dpi_error"]
