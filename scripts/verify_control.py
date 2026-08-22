@@ -86,7 +86,7 @@ class Verifier:
     # ------------------------------------------------------------------ #
 
     def check_coordinate_chain(self) -> None:
-        """移到若干模型坐标，读回真实鼠标位置比对。
+        """验证整条坐标链：角点用纯计算，其余点真移鼠标读回比对。
 
         这条覆盖 DPI 缩放、显示器偏移、模型↔屏幕换算的全部环节。
         它挂掉说明整条坐标链有问题，**后面所有点击都不可信**。
@@ -94,15 +94,32 @@ class Verifier:
         import pyautogui
 
         space = self.scaler.get(SPACE)
-        # 取九宫格外加两个边角，边角最容易暴露夹取与偏移问题
+
+        # --- 先用纯计算验角点，不移鼠标 ---
+        #
+        # 精确角点是夹取与偏移 bug 最爱藏身的地方，但**不能把鼠标真移过去**：
+        # 屏幕四角正是 PyAutoGUI FAILSAFE 的触发点（M1 验收标准 7 要求它
+        # 必须开着）。移过去会立刻抛 FailSafeException，而且鼠标就停在角上，
+        # 之后每次 pyautogui 调用一开头就检查当前位置，于是后续动作全部连坐。
+        #
+        # 两条验收要求在这里是打架的。解法是把它们分开：映射数学是纯函数，
+        # 不需要真鼠标就能验；需要真鼠标的是 DPI 与显示器偏移那条链，而
+        # 那条链用任何点都能验。
+        corner_failures = self._check_corner_mapping(space)
+
+        # --- 再用内缩点验端到端链路 ---
+        #
+        # 各极值内缩 1 个模型像素（≈2.5 真实像素），足以离开 FAILSAFE 的
+        # 四个角点，同时仍然贴着边界——夹取错误在这里照样看得出来。
+        low, high_x, high_y = 1, space.width - 2, space.height - 2
         targets = [
             Point(x, y)
-            for x in (0, space.width // 4, space.width // 2, space.width - 1)
-            for y in (0, space.height // 2, space.height - 1)
+            for x in (low, space.width // 4, space.width // 2, high_x)
+            for y in (low, space.height // 2, high_y)
         ]
 
         worst = 0.0
-        failures = []
+        failures = list(corner_failures)
         for model_point in targets:
             expected = self.scaler.to_real(model_point, SPACE)
             result = self.executor.execute(
@@ -122,6 +139,12 @@ class Verifier:
                     f"实际({actual_x},{actual_y}) 偏差{error}px"
                 )
 
+        # 鼠标停在边缘会让后续检查更容易擦到 FAILSAFE，挪回中心
+        with contextlib.suppress(Exception):
+            self.executor.execute(
+                Action(ActionType.MOUSE_MOVE, x=space.width // 2, y=space.height // 2)
+            )
+
         self.record(
             CheckResult(
                 "坐标链端到端精度",
@@ -131,6 +154,37 @@ class Verifier:
                 {"worst_error_px": worst, "num_targets": len(targets), "failures": failures},
             )
         )
+
+    def _check_corner_mapping(self, space) -> list[str]:
+        """纯计算验证四个角点的往返映射。返回问题清单。
+
+        不移鼠标，因此不受 FAILSAFE 影响。验的是 `CoordinateScaler` 在
+        边界上有没有算错——比如把 ``width - 1`` 夹成了 ``width``，或者
+        多显示器偏移在角上漏加。
+        """
+        problems: list[str] = []
+        corners = [
+            Point(0, 0),
+            Point(space.width - 1, 0),
+            Point(0, space.height - 1),
+            Point(space.width - 1, space.height - 1),
+        ]
+        region = self.scaler.region
+
+        for model_point in corners:
+            real = self.scaler.to_real(model_point, SPACE)
+            if not (region.left <= real.x < region.right and region.top <= real.y < region.bottom):
+                problems.append(f"角点 {model_point.as_tuple()} 映射到区域外 {real.as_tuple()}")
+                continue
+
+            # 往返回来应当还在同一个模型像素上（或相邻一格，取决于舍入）
+            back = self.scaler.to_model(real, SPACE)
+            drift = max(abs(back.x - model_point.x), abs(back.y - model_point.y))
+            if drift > 1:
+                problems.append(
+                    f"角点 {model_point.as_tuple()} 往返漂移 {drift} 格 → {back.as_tuple()}"
+                )
+        return problems
 
     # ------------------------------------------------------------------ #
     # 2. 落点闭环
