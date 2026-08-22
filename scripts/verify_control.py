@@ -120,24 +120,15 @@ class Verifier:
 
         worst = 0.0
         failures = list(corner_failures)
+        disturbed = 0
         for model_point in targets:
             expected = self.scaler.to_real(model_point, SPACE)
-            result = self.executor.execute(
-                Action(ActionType.MOUSE_MOVE, x=model_point.x, y=model_point.y)
-            )
-            if not result.success:
-                failures.append(f"{model_point.as_tuple()} 执行失败：{result.error}")
-                continue
-
-            time.sleep(0.02)  # 等鼠标真的停稳
-            actual_x, actual_y = pyautogui.position()
-            error = max(abs(actual_x - expected.x), abs(actual_y - expected.y))
+            error, problem, was_disturbed = self._probe_point(model_point, expected, pyautogui)
+            if was_disturbed:
+                disturbed += 1
+            if problem:
+                failures.append(problem)
             worst = max(worst, error)
-            if error > TOLERANCE_PX:
-                failures.append(
-                    f"模型{model_point.as_tuple()} 期望屏幕{expected.as_tuple()} "
-                    f"实际({actual_x},{actual_y}) 偏差{error}px"
-                )
 
         # 鼠标停在边缘会让后续检查更容易擦到 FAILSAFE，挪回中心
         with contextlib.suppress(Exception):
@@ -150,10 +141,74 @@ class Verifier:
                 "坐标链端到端精度",
                 not failures,
                 f"{len(targets)} 个目标点，最大偏差 {worst}px（容差 {TOLERANCE_PX}px）"
+                + (f"；{disturbed} 个点重试后通过（期间检测到外部鼠标干扰）" if disturbed else "")
                 + ("" if not failures else "；" + "；".join(failures[:3])),
-                {"worst_error_px": worst, "num_targets": len(targets), "failures": failures},
+                {
+                    "worst_error_px": worst,
+                    "num_targets": len(targets),
+                    "disturbed": disturbed,
+                    "failures": failures,
+                },
             )
         )
+
+    def _probe_point(self, model_point: Point, expected: Point, pyautogui):
+        """移到一个点并读回，返回 (最大偏差, 问题描述或空, 是否受过干扰)。
+
+        ## 为什么要区分"算错了"和"有人碰了鼠标"
+
+        这个脚本跑的时候人就坐在旁边看着，手很容易蹭到触摸板。一次物理
+        移动就会让读数偏几像素，而那和"坐标链算错了"在数字上长得一模一样。
+
+        判据是**稳定性**：连读两次位置，若两次不一致，说明有外力正在移动
+        光标，这一次读数不可信。此时重新移一次再读——真的算错了，重试
+        还是错；只是被蹭了一下，重试就对了。
+
+        不这么做的话，验收会变成看运气：同一台机器同一份代码，手放桌上
+        就过、手扶着鼠标就不过。
+        """
+        result = self.executor.execute(
+            Action(ActionType.MOUSE_MOVE, x=model_point.x, y=model_point.y)
+        )
+        if not result.success:
+            return 0.0, f"{model_point.as_tuple()} 执行失败：{result.error}", False
+
+        error, stable = self._read_back(expected, pyautogui)
+        if stable and error <= TOLERANCE_PX:
+            return error, "", False
+
+        # 读数不稳或超差，重试一次
+        time.sleep(0.15)
+        retry = self.executor.execute(
+            Action(ActionType.MOUSE_MOVE, x=model_point.x, y=model_point.y)
+        )
+        if not retry.success:
+            return error, f"{model_point.as_tuple()} 重试失败：{retry.error}", True
+
+        retry_error, retry_stable = self._read_back(expected, pyautogui)
+        if retry_stable and retry_error <= TOLERANCE_PX:
+            return retry_error, "", True
+
+        actual = pyautogui.position()
+        hint = "（读数不稳定，疑似外部鼠标干扰）" if not retry_stable else ""
+        return (
+            retry_error,
+            f"模型{model_point.as_tuple()} 期望屏幕{expected.as_tuple()} "
+            f"实际({actual[0]},{actual[1]}) 偏差{retry_error}px{hint}",
+            True,
+        )
+
+    @staticmethod
+    def _read_back(expected: Point, pyautogui):
+        """连读两次光标位置。返回 (与期望的最大偏差, 两次是否一致)。"""
+        time.sleep(0.05)
+        first_x, first_y = pyautogui.position()
+        time.sleep(0.05)
+        second_x, second_y = pyautogui.position()
+
+        stable = (first_x, first_y) == (second_x, second_y)
+        error = max(abs(second_x - expected.x), abs(second_y - expected.y))
+        return error, stable
 
     def _check_corner_mapping(self, space) -> list[str]:
         """纯计算验证四个角点的往返映射。返回问题清单。
