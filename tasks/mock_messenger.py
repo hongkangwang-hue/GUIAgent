@@ -18,12 +18,16 @@ M0 全局约束：需要登录真实账号（数据边界），且会向真人�
 反过来说：如果只看「消息列表里出现了那句话」，就得靠截图或 UIA 去读
 界面，那既慢又受渲染时机影响。落盘让判定变成一次 `read_text()`。
 
-## 无障碍属性是刻意设置的
+## 界面元素靠可见文字标识，不靠无障碍属性
 
-输入框和按钮都设了明确的可访问名称，这样 UIA 通道能读到它们。
-**这不是作弊**——真实的 Windows 应用（记事本、设置、资源管理器）
-同样暴露这些属性，M1 的召回率实验已经实测确认。刻意做一个 UIA
-读不到的界面反而不真实。
+tkinter 是自绘控件：整个窗口在 UIA 里基本只暴露一个顶层节点，
+子控件读不到。**所以这个程序对 Agent 来说是纯视觉目标**，
+输入框旁的「消息」标签和按钮上的「发送」二字是 OCR 通道唯一的抓手。
+
+这一点值得记下来：M1 的召回率实验里 UIA 占 72%、OCR 占 28%，
+那是因为测的都是原生 Win32/UWP 窗口。换成自绘界面（tk、Qt、
+Electron、游戏、大量国产客户端）占比会整个翻过来。基础任务里
+有这么一个自绘目标，恰好能验证 OCR 通道不是摆设。
 
 ## 用法
 
@@ -76,10 +80,12 @@ class Messenger:
         row = tk.Frame(self.root)
         row.pack(fill="x", padx=10, pady=(0, 12))
 
+        # 可见标签：OCR 通道靠它定位输入框。tk 控件没有可用的无障碍名称，
+        # 屏幕上看不见的东西 Agent 也找不到。
+        tk.Label(row, text="消息", font=("Microsoft YaHei", 10)).pack(side="left", padx=(0, 6))
+
         self.entry = tk.Entry(row, font=("Microsoft YaHei", 11))
         self.entry.pack(side="left", fill="x", expand=True, ipady=6)
-        # 可访问名称：UIA 通道靠它识别这是哪个控件
-        self.entry.configure(name="消息输入框")
         self.entry.bind("<Return>", lambda _event: self.send())
 
         self.button = tk.Button(
