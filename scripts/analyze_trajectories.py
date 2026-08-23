@@ -38,22 +38,35 @@ def _console() -> None:
 
 
 def _action_key(intent: dict) -> str:
-    """把一个动作压成可比较的字符串。
+    """把一个**真实动作**压成可比较的字符串。零动作的 `done` 返回空串。
 
-    **坐标要参与比较，但要容差。** 模型重复点同一个按钮时坐标往往差几个
-    像素，逐像素比会把重复动作漏掉；完全忽略坐标又会把"点了两个不同按钮"
-    误判成重复。取 20 像素的格子是个折中——比按钮小，比抖动大。
+    ## 字段名踩过一次坑
+
+    `StepRecord.action_intent` 是 `ActionIntent.as_dict()` 的产物，
+    结构是 ``{"action_type": ..., "params": {...}, "done": ...}``。
+    第一版按 ``intent["action"]`` 和顶层 ``x/y`` 取，全部取空，于是
+    **真实动作的重复一次都没统计到**，被统计成"重复"的全是相邻两步都
+    收尾的 `done`——数字看着合理（13%），意思完全不是那个意思。
+
+    这类错误不会报异常，只会安静地给出一个像模像样的错数。
+
+    ## 坐标要参与比较，但要容差
+
+    模型重复点同一个按钮时坐标往往差几个像素，逐像素比会把重复漏掉；
+    完全忽略坐标又会把"点了两个不同按钮"误判成重复。取 20 像素的格子
+    是个折中——比按钮小，比抖动大。
     """
-    if not intent:
+    if not intent or intent.get("done"):
         return ""
-    if intent.get("done"):
-        return "done"
-    parts = [str(intent.get("action") or "")]
-    if intent.get("text"):
-        parts.append(f"text={intent['text']}")
-    if intent.get("keys"):
-        parts.append(f"keys={intent['keys']}")
-    x, y = intent.get("x"), intent.get("y")
+    action_type = str(intent.get("action_type") or "")
+    if not action_type:
+        return ""
+    params = intent.get("params") or {}
+    parts = [action_type]
+    for field_name in ("text", "keys", "key", "direction"):
+        if params.get(field_name):
+            parts.append(f"{field_name}={params[field_name]}")
+    x, y = params.get("x"), params.get("y")
     if x is not None and y is not None:
         parts.append(f"@{int(x) // 20},{int(y) // 20}")
     return "|".join(parts)
@@ -69,6 +82,9 @@ def analyze(root: Path, since: str) -> dict:
         "empty_done_subtasks": 0,
         "repeat_steps": 0,
         "max_repeat_run": 0,
+        #: 相邻两步都是零动作 done —— 连续放弃，与「重复同一个动作」是
+        #: 两回事，必须分开数。第一版把两者混成一个数字了。
+        "consecutive_done": 0,
         "actions": Counter(),
         "execution_status": Counter(),
         "grounding_source": Counter(),
@@ -112,12 +128,17 @@ def analyze(root: Path, since: str) -> dict:
         # （比如点输入框 → 打字 → 再点它），连着发才是没看反馈。
         run = 1
         previous = ""
+        previous_had_action = True
         for record in steps:
-            key = _action_key(record.action_intent)
-            stats["actions"][record.action_intent.get("action") or "done"] += 1
+            intent = record.action_intent or {}
+            key = _action_key(intent)
+            stats["actions"][intent.get("action_type") or "（无动作·done）"] += 1
             stats["execution_status"][record.execution_status] += 1
             source = (record.grounding or {}).get("source") or "-"
             stats["grounding_source"][source] += 1
+
+            if not key and not previous_had_action and record.step > 1:
+                stats["consecutive_done"] += 1
 
             if key and key == previous:
                 run += 1
@@ -137,6 +158,7 @@ def analyze(root: Path, since: str) -> dict:
             else:
                 run = 1
             previous = key
+            previous_had_action = bool(key)
 
     return stats
 
@@ -168,8 +190,13 @@ def main() -> int:
 
     rep = stats["repeat_steps"]
     print(f"  连续重复动作   {rep}/{stats['steps']} 步（{rep / stats['steps']:.0%}）")
-    print(f"     最长连发 {stats['max_repeat_run']} 次。这些步全是无效的：")
-    print("     模型不看上一步的结果，也不看屏幕上的错误提示。")
+    print(f"     最长连发 {stats['max_repeat_run']} 次。**只数真实动作**：")
+    print("     同一个动作连着发，说明模型不看上一步的结果，也不看错误提示。")
+    print()
+    cd = stats["consecutive_done"]
+    print(f"  连续零动作     {cd}/{stats['steps']} 步（{cd / stats['steps']:.0%}）")
+    print("     相邻两步都是「什么都没做就报完成」。与上一项是两回事：")
+    print("     那是白做，这是连着不做。")
     print()
 
     print("  动作分布：", dict(stats["actions"].most_common()))
