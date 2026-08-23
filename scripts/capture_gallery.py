@@ -58,7 +58,25 @@ def build_detector(use_ocr: bool, use_gpu: bool, budget_ms: float = 8000.0) -> E
     #
     # 实测：客机上设置页面 1500ms 只抓到 16 个就被掐断，OCR 却有 80 个，
     # 这个对比是假的。
-    return ElementDetector(ocr_engine=ocr_engine, uia_tree=UIATree(time_budget_ms=budget_ms))
+    # **图集采集用串行（UIA 先跑完，再跑 OCR），不用并行。**
+    #
+    # ElementDetector 默认把 OCR 甩进工作线程、UIA 留在调用线程并行跑，
+    # 依据是模块文档里那句「OCR 是慢的那个，几百毫秒」。**在客机上这个
+    # 前提不成立**：CPU 推理的 PaddleOCR 要 11.5 秒，把 4 个 vCPU 吃满，
+    # UIA 的跨进程 COM 调用被饿死——实测同一个设置页面：
+    #
+    #     并行 + OCR：UIA 8133ms 才 61 个，还被时间截断
+    #     单独跑 UIA：UIA  228ms 拿到 98 个，完整
+    #
+    # 并行省下的是 min(uia, ocr) ≈ 228ms，代价却是遍历不完整，
+    # 而完整性直接决定 M1 验收标准 4「按来源分项统计」的准确性。
+    #
+    # Agent 循环里仍用并行——那里延迟才是主要矛盾，且不做分项统计。
+    return ElementDetector(
+        ocr_engine=ocr_engine,
+        uia_tree=UIATree(time_budget_ms=budget_ms),
+        parallel=False,
+    )
 
 
 def main() -> int:
