@@ -26,6 +26,24 @@
 # 所以每个任务的 reset 都先把不属于自己的应用关干净，
 # 让每一轮从同一张桌面开始。
 #
+# ## 但 taskkill 清不干净
+#
+# 实测连续撞了三种它够不着的残留：
+#
+#   记事本的会话恢复      状态在磁盘上，杀了再启动会原样恢复
+#   开始菜单 / 搜索浮层   系统 UI，不属于任何可杀的进程
+#   帐户登录模态框        盖住半个屏幕，taskkill 碰不到
+#
+# 第三种最贵：Copilot 固定在任务栏上紧挨着 Edge，模型点岔一次就拉起一个
+# 登录框，然后「搜索指定内容」连续四轮以完全相同的方式失败——17 步、
+# 同一个终止原因，Agent 对着登录框按了 12 次回车。
+#
+# 所以 reset 的第一条统一是 `tasks/reset_desktop.py`：Esc 关浮层、
+# Win+D 最小化所有窗口、杀掉不属于测试环境的常驻应用。
+#
+# **根本解法仍是快照恢复。** 上面这些只是把任务级 reset 的覆盖面往前推
+# 一截，推不到头。M5 的 60 轮正式评测要用快照。
+#
 # ## precondition：防止「起点没建立」被算成成功
 #
 # reset 不一定成功。`start calc` 可能因为计算器没装、启动慢过
@@ -70,6 +88,7 @@ tasks:
         name: msedge.exe
         should_run: true
     reset:
+      - python tasks/reset_desktop.py
       - taskkill /F /IM notepad.exe /T
       - taskkill /F /IM msedge.exe /T
     note: >
@@ -98,6 +117,7 @@ tasks:
           pattern: "Python.*Edge"
           regex: true
     reset:
+      - python tasks/reset_desktop.py
       - taskkill /F /IM notepad.exe /T
       - taskkill /F /IM msedge.exe /T
     note: >
@@ -119,6 +139,7 @@ tasks:
         - type: window_title
           pattern: "测试文档"
     reset:
+      - python tasks/reset_desktop.py
       - taskkill /F /IM notepad.exe /T
       - taskkill /F /IM msedge.exe /T
     # 目标文件不存在（setup_env.py 没跑）时任务不可能完成，
@@ -144,6 +165,7 @@ tasks:
         text: 你好世界
     reset:
       # 先清场：上一轮留下的记事本会让模型整条轨迹都以为自己在操作记事本。
+      - python tasks/reset_desktop.py
       - taskkill /F /IM notepad.exe /T
       - taskkill /F /IM msedge.exe /T
       - python tasks/mock_messenger_reset.py
@@ -170,6 +192,7 @@ tasks:
         name: CalculatorApp.exe
         should_run: false
     reset:
+      - python tasks/reset_desktop.py
       - taskkill /F /IM notepad.exe /T
       - taskkill /F /IM msedge.exe /T
       - start calc
