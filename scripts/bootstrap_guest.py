@@ -6,10 +6,26 @@
 
 它做四件事：
 
-1. 装 M1 验收所需的最小依赖集（不装 torch / paddleocr / langchain）
+1. 装 M1 验收所需的依赖（默认含 OCR，见下）
 2. `pip freeze` 冻结版本到 `requirements-vm.lock.txt`
 3. 调 `env_check.py` 做自检
 4. **把客机的环境实测值写成验收材料** —— `docs/m1-guest-environment.md`
+
+## 为什么默认装 OCR
+
+一开始这里写的是「只装控制层，不装 paddleocr，省得快照变大」。**那是错的。**
+
+M1 验收标准 4 要的是「在 20 张测试截图上报告**双通道融合后**的 UI 元素
+召回率，**按来源分项统计**」——UIA 一条通道，OCR 一条通道，缺一条就没有
+「融合」也没有「分项」。`capture_gallery.py` 正是靠这两条通道出图的。
+
+而且它**必须在拍 `eval-baseline` 快照之前装好**：快照之后再装，每次恢复
+快照都会把它抹掉，M2-M5 每轮评测都要重装一次。
+
+代价是快照大几个 GB。100GB 的盘装得下，比每次恢复后重装划算得多。
+
+`--no-ocr` 可以跳过（只跑验收标准 3/5/6 的控制层验证时用），但那样
+标准 4 做不了。
 
 ## 第 4 步为什么单独做
 
@@ -40,9 +56,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-#: M1 验收所需的最小依赖集，与 CI 一致（`.github/workflows/ci.yml`）。
-#: **不含 torch / paddleocr / easyocr / langchain** —— 那几个加起来好几个 GB，
-#: M1 验收只用得到控制层，装了只会让快照变大。
+#: 控制层依赖，与 CI 一致（`.github/workflows/ci.yml`）。
+#: 支撑 M1 验收标准 3（三档 DPI）、5（键鼠动作与中文输入）、6（完整通路）。
 RUNTIME_DEPS = [
     "numpy",
     "pillow",
@@ -55,6 +70,17 @@ RUNTIME_DEPS = [
     "dxcam",
 ]
 DEV_DEPS = ["pytest", "rich", "typer", "pyyaml"]
+
+#: OCR 识别通道。**M1 验收标准 4 需要它**——那条要的是「双通道融合后的
+#: 召回率，按来源分项统计」，只有 UIA 一条通道既谈不上融合也谈不上分项。
+#:
+#: 装 CPU 版就够：单张图从几十毫秒变几百毫秒，而召回率评测总共只跑 20 张。
+#: 客机没有 GPU 直通，装 GPU 版也用不上。
+OCR_DEPS = ["paddlepaddle", "paddleocr"]
+
+#: 模型调用。M1 用不到（M1 全程没有大模型参与），M2 开始才需要。
+#: 放在这里是为了让 `--with-llm` 能一次装齐，避免快照拍完才发现缺东西。
+LLM_DEPS = ["langchain", "langchain-openai", "python-dotenv"]
 
 LOCKFILE = Path("requirements-vm.lock.txt")
 RECORD = Path("docs/m1-guest-environment.md")
@@ -81,17 +107,30 @@ def _run(args: list[str], **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(args, **{**_TEXT, **kwargs})
 
 
-def install() -> bool:
+def install(with_ocr: bool = True, with_llm: bool = False) -> bool:
     print("=" * 64)
     print("1/4  安装依赖")
     print("=" * 64)
     pip = [sys.executable, "-m", "pip", "install", "--quiet"]
     if _run([*pip, "--upgrade", "pip"]).returncode != 0:
         return False
-    for group in (RUNTIME_DEPS, DEV_DEPS):
+
+    groups = [("控制层", RUNTIME_DEPS), ("开发工具", DEV_DEPS)]
+    if with_ocr:
+        groups.append(("OCR 通道（验收标准 4 需要，装得比较久）", OCR_DEPS))
+    if with_llm:
+        groups.append(("模型调用（M2 才用得到）", LLM_DEPS))
+
+    for label, group in groups:
+        print(f"  -- {label}")
         if _run([*pip, *group]).returncode != 0:
             print("\n[失败] 依赖安装未完成。检查网络后重跑本脚本。")
             return False
+
+    if not with_ocr:
+        print("\n  [注意] 已跳过 OCR。M1 验收标准 4（双通道召回率）做不了，")
+        print("         而且补装必须在拍 eval-baseline 快照之前，否则每次")
+        print("         恢复快照都会把它抹掉。")
     print("  依赖安装完成\n")
     return True
 
@@ -263,9 +302,19 @@ def main() -> int:
     _console()
     parser = argparse.ArgumentParser(description="客机一键引导")
     parser.add_argument("--skip-install", action="store_true", help="跳过依赖安装")
+    parser.add_argument(
+        "--no-ocr",
+        action="store_true",
+        help="不装 OCR（M1 验收标准 4 将无法进行，且补装须在拍快照之前）",
+    )
+    parser.add_argument(
+        "--with-llm",
+        action="store_true",
+        help="一并装 langchain（M2 才需要；想让快照一次到位就加上）",
+    )
     args = parser.parse_args()
 
-    if not args.skip_install and not install():
+    if not args.skip_install and not install(with_ocr=not args.no_ocr, with_llm=args.with_llm):
         return 1
     freeze()
     check = self_check()
@@ -280,6 +329,9 @@ def main() -> int:
     print("\n" + "=" * 64)
     print("完成。下一步：")
     print("=" * 64)
+    if args.no_ocr:
+        print("  0. [先做] 补装 OCR —— 快照拍完再装的话，每次恢复都会丢")
+        print("     pip install paddlepaddle paddleocr")
     print("  1. 客机关机 → 拍快照 eval-baseline")
     print("  2. 开机，打开一个记事本")
     print("  3. python scripts\\verify_control.py --only stop")
