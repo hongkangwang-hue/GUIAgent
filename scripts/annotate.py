@@ -58,6 +58,99 @@ ELEMENT_TYPES = {
 }
 
 
+def _collect_boxes(view, window: str) -> list[tuple[int, int, int, int]]:
+    """自己实现的画框循环，取代 `cv2.selectROIs`。
+
+    换掉它有三个理由，都是标注 200 个框时真实感受到的：
+
+    1. **ESC 常常不响应。** `selectROIs` 只在它自己的事件循环里收键盘，
+       虚拟机里窗口焦点稍有偏差就吃不到按键，人被卡在里面出不来——
+       点右上角 × 又会让已画的框全部丢失。这里改成同时接受
+       ESC / q / 回车，并且主动检测窗口被关闭，任何一种方式都能带着
+       已画的框正常返回。
+    2. **每个框都要额外按一次回车确认。** 松开鼠标就已经确定了框，
+       再按一次键纯属重复劳动——200 个框就是 200 次。这里松手即录入。
+    3. **画错了没法撤销**，只能从头再来。这里按 u 撤销上一个。
+
+    返回的是**显示坐标**，缩放还原由调用方负责。
+    """
+    import cv2
+
+    boxes: list[tuple[int, int, int, int]] = []
+    state = {"drawing": False, "start": (0, 0), "cursor": (0, 0)}
+
+    def on_mouse(event, x, y, flags, param):  # noqa: ARG001
+        if event == cv2.EVENT_LBUTTONDOWN:
+            state["drawing"] = True
+            state["start"] = (x, y)
+            state["cursor"] = (x, y)
+        elif event == cv2.EVENT_MOUSEMOVE and state["drawing"]:
+            state["cursor"] = (x, y)
+        elif event == cv2.EVENT_LBUTTONUP and state["drawing"]:
+            state["drawing"] = False
+            x0, y0 = state["start"]
+            left, top = min(x0, x), min(y0, y)
+            width, height = abs(x - x0), abs(y - y0)
+            # 4px 以下当成误点，不记录——手抖点一下不该产生一个空框
+            if width >= 4 and height >= 4:
+                boxes.append((left, top, width, height))
+
+    cv2.namedWindow(window, cv2.WINDOW_AUTOSIZE)
+    cv2.setMouseCallback(window, on_mouse)
+
+    while True:
+        canvas = view.copy()
+        for index, (x, y, w, h) in enumerate(boxes, start=1):
+            cv2.rectangle(canvas, (x, y), (x + w, y + h), (0, 220, 0), 2)
+            cv2.putText(
+                canvas,
+                str(index),
+                (x + 3, y + 18),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 220, 0),
+                2,
+            )
+        if state["drawing"]:
+            cv2.rectangle(canvas, state["start"], state["cursor"], (0, 180, 255), 1)
+
+        cv2.putText(
+            canvas,
+            f"boxes: {len(boxes)}   [u] undo   [ESC/q/Enter] done",
+            (10, 24),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.65,
+            (0, 0, 0),
+            4,
+        )
+        cv2.putText(
+            canvas,
+            f"boxes: {len(boxes)}   [u] undo   [ESC/q/Enter] done",
+            (10, 24),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.65,
+            (255, 255, 255),
+            1,
+        )
+        cv2.imshow(window, canvas)
+
+        key = cv2.waitKey(20) & 0xFF
+        if key in (27, ord("q"), 13, 10):
+            break
+        if key == ord("u") and boxes:
+            boxes.pop()
+
+        # 窗口被人点 × 关掉时，带着已画的框正常返回，而不是卡死或丢数据
+        try:
+            if cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
+                break
+        except cv2.error:
+            break
+
+    cv2.destroyAllWindows()
+    return boxes
+
+
 def annotate(image_path: Path, existing: dict | None = None, scale: float = 0.0) -> dict:
     import cv2
 
@@ -90,15 +183,13 @@ def annotate(image_path: Path, existing: dict | None = None, scale: float = 0.0)
     else:
         print()
     print()
-    print("  拖拽画框 → 回车/空格 确认 → 继续画下一个 → ESC 结束")
+    print("  拖拽画框（松手即录入，不用按回车） → [u] 撤销上一个 → [ESC/q/回车] 结束")
     print("  只标任务相关元素（按钮 / 菜单项 / 输入框 / 列表项 / 标签页 / 复选框）")
     print("  不要标正文、日志、状态栏这类不会被点击的文字")
     print()
 
-    window = "annotate (ESC 结束)"
-    # showCrosshair=True 让边缘对齐更容易；fromCenter=False 是从左上角拖
-    boxes = cv2.selectROIs(window, view, showCrosshair=True, fromCenter=False)
-    cv2.destroyAllWindows()
+    window = "annotate"
+    boxes = _collect_boxes(view, window)
 
     if len(boxes) == 0:
         print("没有画任何框，退出")
