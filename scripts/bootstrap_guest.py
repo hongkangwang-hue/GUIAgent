@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import subprocess
 import sys
@@ -101,10 +102,21 @@ def _console() -> None:
 #: 本项目在 M1 已经因为编码问题崩过三次，这是第四种形态。
 _TEXT = {"encoding": "utf-8", "errors": "replace", "text": True}
 
+#: 子进程的环境变量：强制它**也用 UTF-8 输出**。
+#:
+#: 光在父进程这边 `encoding="utf-8"` 解码是不够的——子进程若按系统区域
+#: 编码（简体中文机器上是 cp936）写 stdout，父进程再按 UTF-8 去读，中文
+#: 就成了一串乱码。客机首跑时 env_check 的警告文案正是这样糊掉的：
+#: 「CUDA ������: torch δ��װ」。
+#:
+#: JSON 结构本身是 ASCII，所以解析不会失败——**只有中文细节会坏，而且
+#: 不报错**。这类问题最容易一直留着没人发现。
+_CHILD_ENV = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+
 
 def _run(args: list[str], **kwargs) -> subprocess.CompletedProcess:
     print("  $ " + " ".join(args))
-    return subprocess.run(args, **{**_TEXT, **kwargs})
+    return subprocess.run(args, env=_CHILD_ENV, **{**_TEXT, **kwargs})
 
 
 def install(with_ocr: bool = True, with_llm: bool = False) -> bool:
@@ -139,7 +151,9 @@ def freeze() -> None:
     print("=" * 64)
     print("2/4  冻结版本")
     print("=" * 64)
-    result = subprocess.run([sys.executable, "-m", "pip", "freeze"], capture_output=True, **_TEXT)
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "freeze"], capture_output=True, env=_CHILD_ENV, **_TEXT
+    )
     LOCKFILE.write_text(result.stdout, encoding="utf-8", newline="\n")
     count = len([ln for ln in result.stdout.splitlines() if ln.strip()])
     print(f"  {count} 个包已写入 {LOCKFILE}")
@@ -153,6 +167,7 @@ def self_check() -> dict:
     result = subprocess.run(
         [sys.executable, "scripts/env_check.py", "--json", "--skip-ocr"],
         capture_output=True,
+        env=_CHILD_ENV,
         **_TEXT,
     )
     try:
