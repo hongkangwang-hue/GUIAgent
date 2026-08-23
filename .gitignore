@@ -16,6 +16,10 @@ htmlcov/
 data/raw/
 data/processed/
 data/cache/
+# OCR 对照实验的两组测试图：合成集由 make_ocr_testset.py 按固定种子
+# 复现，真实集是从 ScreenSpot-v2 复制的第三方数据，都不随本仓库分发
+data/ocr-testset/
+data/ocr-realset/
 logs/
 outputs/
 *.pth
