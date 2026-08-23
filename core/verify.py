@@ -88,11 +88,37 @@ def check_process(name: str, should_run: bool = True) -> CheckResult:
     return CheckResult(ok, f"进程 {name!r} {verb}；{state}", "process")
 
 
+def _own_console_handle() -> int:
+    """评测脚本自己那个控制台窗口的句柄，没有则 0。"""
+    if not IS_WINDOWS:
+        return 0
+    try:
+        import ctypes
+
+        return int(ctypes.windll.kernel32.GetConsoleWindow())
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def check_window_title(pattern: str, regex: bool = False) -> CheckResult:
     """存在标题匹配的窗口。
 
-    **遍历所有顶层窗口，不只看前台。** 只看前台会让判定受「任务结束时
-    恰好哪个窗口在最上面」影响——那是与任务成败无关的噪声。
+        **遍历所有顶层窗口，不只看前台。** 只看前台会让判定受「任务结束时
+        恰好哪个窗口在最上面」影响——那是与任务成败无关的噪声。
+
+        **但要跳过评测脚本自己的控制台窗口。** 这是实测踩出来的：
+        「搜索 Python 官方文档」的判据是标题含 `Python`，而运行评测的那个
+        命令行窗口标题正是
+
+            命令提示符 - python  scripts
+    un_basic_tasks.py --execute --repeats 5
+
+        于是任务明明失败（模型自己都报了没做完），判定却打勾。25 轮里
+        这样虚增了 1 次成功，成功率从 52% 变成 56%——而且从输出里看不出来，
+        因为 `detail` 里写的是「窗口标题命中」，看着完全正常。
+
+        教训比这条 bug 本身重要：**评测工具必须看不见自己。** 判定器读的是
+        全局状态，而评测进程本身也在那个全局状态里。
     """
     if not IS_WINDOWS:
         return CheckResult(False, "窗口标题判据仅支持 Windows", "window_title")
@@ -101,12 +127,13 @@ def check_window_title(pattern: str, regex: bool = False) -> CheckResult:
     except ImportError:
         return CheckResult(False, "uiautomation 未安装，无法做窗口标题判定", "window_title")
 
+    own = _own_console_handle()
     titles: list[str] = []
     try:
         window = auto.GetRootControl().GetFirstChildControl()
         while window:
             name = (window.Name or "").strip()
-            if name:
+            if name and (not own or window.NativeWindowHandle != own):
                 titles.append(name)
             window = window.GetNextSiblingControl()
     except Exception as exc:  # noqa: BLE001

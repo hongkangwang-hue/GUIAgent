@@ -76,9 +76,13 @@ tasks:
         - type: process
           name: msedge.exe
           should_run: true
+        # **不能只写 "Python"。** 实测里它匹配到了评测脚本自己的命令行
+        # 窗口标题（"命令提示符 - python  scripts\run_basic_tasks.py ..."），
+        # 把一次失败判成了成功。core/verify.py 已经跳过自己的控制台，
+        # 这里再收紧一层：要求查询词与 Edge 同时出现在标题里。
         - type: window_title
-          pattern: "Python"
-          regex: false
+          pattern: "Python.*Edge"
+          regex: true
     reset:
       - taskkill /F /IM msedge.exe /T
     note: >
