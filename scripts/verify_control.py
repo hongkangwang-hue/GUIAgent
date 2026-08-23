@@ -522,6 +522,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="控制层真机验证（必须在隔离虚拟机内运行）")
     parser.add_argument("--only", choices=["coord", "click", "actions", "input", "stop", "safety"])
     parser.add_argument("--skip-input", action="store_true", help="跳过需要文本框的输入检查")
+    parser.add_argument(
+        "--delay",
+        type=int,
+        default=0,
+        help=(
+            "开始检查前先倒计时若干秒，留出切换前台窗口的时间。"
+            "中文输入检查要求记事本在前台，而命令得在 PowerShell 里敲——"
+            "没有这个参数就只能「回车后赶紧点记事本」，而那一下会被"
+            "坐标精度检查判成外部鼠标干扰。用 --only input --delay 5 就没有这个矛盾"
+        ),
+    )
     parser.add_argument("--skip-stop", action="store_true", help="跳过需要人工按键的急停检查")
     parser.add_argument("--monitor", type=int, default=1)
     parser.add_argument(
@@ -602,6 +613,22 @@ def main() -> int:
                 "input": verifier.check_chinese_input,
                 "stop": verifier.check_emergency_stop_latency,
             }
+            # 倒计时让人有时间把目标窗口切到前台。
+            #
+            # 这个参数是踩过坑之后加的：中文输入检查通过 UIA 在**前台窗口**里
+            # 找文本框，而命令必须在 PowerShell 里敲——敲完 PowerShell 就是前台。
+            # 原先的办法是「回车后赶紧点一下记事本」，但坐标精度检查排在最前，
+            # 那一下点击会被它判成外部鼠标干扰，于是两项一起失败。
+            if args.delay > 0:
+                print()
+                print(f"  {args.delay} 秒后开始 —— 请现在切到目标窗口")
+                for remaining in range(args.delay, 0, -1):
+                    print(f"  {remaining} ...", end="", flush=True)
+                    time.sleep(1)
+                print()
+                print("  开始")
+                print()
+
             if args.only:
                 checks[args.only]()
             else:
