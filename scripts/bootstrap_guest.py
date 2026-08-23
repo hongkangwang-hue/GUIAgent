@@ -178,7 +178,35 @@ def self_check() -> dict:
 
 
 def measure() -> dict:
-    """实测截图引擎、延迟、分辨率与 DPI。"""
+    """实测截图引擎、延迟、分辨率与 DPI。
+
+    ## 为什么报两个延迟数字
+
+    第一版只测了 `fresh=True`，在客机上量出 p50 **500ms**，一度以为是虚拟
+    显卡配置有问题。**其实是测量方法的问题。**
+
+    dxcam 走连续捕获，`fresh=True` 会等一张**新**帧；桌面静止时没有新帧，
+    它等到 `FRESH_TIMEOUT_S`（0.5 秒）超时才复用缓存。在一动不动的
+    PowerShell 界面上连拍 30 张，每张都撞超时——量到的是超时时长。
+
+    改成 `fresh=False` 又倒向另一头：直接返回缓存，宿主机上量出 0.04ms，
+    等于什么都没测。
+
+    所以两个都报，各自的含义 `ScreenCapturer.benchmark` 的文档里写得很清楚：
+
+    - **latest（`fresh=False`）** —— "取当前画面"的耗时。桌面静止时它几乎
+      只是返回缓存，宿主机上量出 0.03ms、复用率 96%——这个数字好看但没用
+    - **fresh（`fresh=True`）** —— "等一帧新画面"的耗时，下限是显示器刷新
+      周期，**物理上不可能更低**。**验收标准 1 对照的是它**
+
+    为什么对照 fresh：Agent 循环里截图发生在动作执行完 + 等待界面稳定之后，
+    画面刚被改过，dxcam 的后台线程早已抓到新帧，`grab()` 立刻返回——走的
+    正是这条路径。而 latest 在那个时刻同样会拿到新帧，两者趋于一致；只有在
+    桌面静止的**测量场景**里 latest 才会退化成读缓存。
+
+    配套的 `reuse_rate` 是判断数字可不可信的关键：接近 1 说明这批测量几乎
+    全是缓存命中，延迟数字要打折看。
+    """
     print("=" * 64)
     print("4/4  环境实测")
     print("=" * 64)
@@ -188,44 +216,44 @@ def measure() -> dict:
     from perception.dpi import enable_dpi_awareness
 
     # 必须在读 DPI 之前启用感知，否则 Windows 会对进程报回逻辑值。
-    # M1 曾因此把 150% 的机器记成 100%。
+    # M1 曾因此把一台 150% 的机器记成 100%，三档 DPI 的记录全废。
     enable_dpi_awareness()
     dpi = dpi_describe()
 
     capturer = ScreenCapturer()
     shot = capturer.capture(fresh=True)
 
-    import time
-
-    samples = []
-    for _ in range(30):
-        start = time.perf_counter()
-        capturer.capture(fresh=True)
-        samples.append((time.perf_counter() - start) * 1000.0)
-    samples.sort()
+    latest = capturer.benchmark(n=50, fresh=False)
+    # fresh 每次可能耗 0.5 秒超时，跑少一点
+    fresh = capturer.benchmark(n=5, fresh=True)
 
     data = {
         "engine": shot.engine,
-        "resolution": f"{shot.width}×{shot.height}",
+        "resolution": f"{shot.width}x{shot.height}",
         "dpi": dpi.get("system_dpi"),
         "scale": dpi.get("scale_factor"),
         "dpi_aware": dpi.get("dpi_aware"),
-        "p50_ms": samples[len(samples) // 2],
-        "p95_ms": samples[int(len(samples) * 0.95)],
-        "max_ms": samples[-1],
+        "p50_ms": latest["p50_ms"],
+        "p95_ms": latest["p95_ms"],
+        "max_ms": latest["max_ms"],
+        "reuse_rate": latest.get("reuse_rate"),
+        "fresh_p50_ms": fresh["p50_ms"],
+        "fresh_p95_ms": fresh["p95_ms"],
     }
 
     print(f"  截图引擎   {data['engine']}")
     print(f"  分辨率     {data['resolution']}")
     print(f"  DPI        {data['dpi']}（缩放 {data['scale']:.0%}，感知={data['dpi_aware']}）")
+    print(f"  取当前画面 p50 {data['p50_ms']:.2f}ms  p95 {data['p95_ms']:.2f}ms")
     print(
-        f"  截图延迟   p50 {data['p50_ms']:.2f}ms  "
-        f"p95 {data['p95_ms']:.2f}ms  max {data['max_ms']:.2f}ms"
+        f"  等一帧新画面 p50 {data['fresh_p50_ms']:.2f}ms  "
+        f"p95 {data['fresh_p95_ms']:.2f}ms   ← 验收标准 1 对照这个"
     )
-    if data["engine"] != "dxcam":
-        print("\n  [注意] 未使用 dxcam。虚拟机里这是预期的（DXGI 依赖显卡驱动），")
-        print("         已自动降级。这个延迟与宿主机的 dxcam 数据要并列呈现，")
-        print("         不是缺陷，但也不能拿它替换宿主机的结论。")
+    if data["reuse_rate"] is not None:
+        print(f"  缓存复用率 {data['reuse_rate']:.0%}")
+        if data["reuse_rate"] > 0.8:
+            print("             [注意] 复用率很高，说明测量期间桌面基本静止，")
+            print("             这批「取当前画面」的数字偏乐观，真实使用中会高一些。")
     print()
     return data
 
@@ -251,9 +279,10 @@ def write_record(env: dict, check: dict) -> None:
         f"| 截图引擎 | **{env['engine']}** |",
         f"| 分辨率 | **{env['resolution']}** |",
         f"| DPI | {env['dpi']}（缩放 {env['scale']:.0%}，感知={env['dpi_aware']}） |",
-        f"| 截图延迟 p50 | **{env['p50_ms']:.2f} ms** |",
-        f"| 截图延迟 p95 | {env['p95_ms']:.2f} ms |",
-        f"| 截图延迟 max | {env['max_ms']:.2f} ms |",
+        f"| **等一帧新画面 p50** | **{env['fresh_p50_ms']:.2f} ms** ← 验收对照 |",
+        f"| 等一帧新画面 p95 | {env['fresh_p95_ms']:.2f} ms |",
+        f"| 取当前画面 p50 | {env['p50_ms']:.2f} ms（缓存复用率 "
+        f"{env.get('reuse_rate') or 0:.0%}，偏乐观） |",
         "",
         "## 与宿主机的对照",
         "",
@@ -264,7 +293,7 @@ def write_record(env: dict, check: dict) -> None:
         "| 环境 | 引擎 | 分辨率 | p50 |",
         "|---|---|---|---|",
         "| 宿主机 | dxcam | 2560×1600 | 2.35–5.16 ms |",
-        f"| 客机 | {env['engine']} | {env['resolution']} | {env['p50_ms']:.2f} ms |",
+        f"| 客机 | {env['engine']} | {env['resolution']} | {env['fresh_p50_ms']:.2f} ms |",
         "",
     ]
 
@@ -277,6 +306,19 @@ def write_record(env: dict, check: dict) -> None:
         ]
 
     lines += [
+        "## 两个延迟数字的区别（重要）",
+        "",
+        "`fresh=True` 会等一张**新**帧。桌面静止时没有新帧，dxcam 会等到",
+        "`FRESH_TIMEOUT_S`（0.5 秒）超时再复用缓存。**在不动的桌面上连拍，",
+        "量到的是超时时长，不是引擎速度**——本项目第一次在客机上测就栽在这，",
+        "量出 p50 500ms，一度以为是虚拟显卡配置有问题。",
+        "",
+        "反过来 `fresh=False` 在静止桌面上直接读缓存，宿主机量出 0.03ms、",
+        "复用率 96%，同样没有意义。",
+        "",
+        "**验收标准 1 对照「等一帧新画面」**：Agent 循环里截图发生在动作执行完",
+        "且界面稳定之后，画面刚被改过，新帧就绪，走的正是这条路径。",
+        "",
         "## 自检结果",
         "",
         f"- 必过项：{len(required) - len(failed_names)}/{len(required)} 通过"
