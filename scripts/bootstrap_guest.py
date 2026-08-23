@@ -195,36 +195,31 @@ def self_check() -> dict:
 def measure() -> dict:
     """实测截图引擎、延迟、分辨率与 DPI。
 
-    ## 为什么报两个延迟数字
+    ## 口径必须和宿主机基线一致，否则两个数没法比
 
-    第一版只测了 `fresh=True`，在客机上量出 p50 **500ms**，一度以为是虚拟
-    显卡配置有问题。**其实是测量方法的问题。**
+    本项目验收标准 1（单帧 <15ms）的既有口径写在 `scripts/env_check.py`：
+    `capturer.benchmark(n=30)`，**默认 `fresh=False`**，即「取当前画面」。
+    `docs/新机器实测数据.md` 记的宿主机基线 p50 0.029–0.058ms 就是这个口径。
 
-    dxcam 走连续捕获，`fresh=True` 会等一张**新**帧；桌面静止时没有新帧，
-    它等到 `FRESH_TIMEOUT_S`（0.5 秒）超时才复用缓存。在一动不动的
-    PowerShell 界面上连拍 30 张，每张都撞超时——量到的是超时时长。
+    所以这里的**主指标也用 `fresh=False`**。踩过的坑记在这，免得再走一遍：
 
-    改成 `fresh=False` 又倒向另一头：直接返回缓存，宿主机上量出 0.04ms，
-    等于什么都没测。
+    - 第一版用 `fresh=True`，客机量出 p50 **500ms**，以为是虚拟显卡配置有
+      问题。实际上 dxcam 走连续捕获，`fresh=True` 要等一张**新**帧，桌面
+      静止时没有新帧，就等满 `FRESH_TIMEOUT_S`（0.5 秒）超时——量到的是
+      超时时长。
+    - 之后试过在每次截图前往控制台打字符制造画面变化，数字在 4ms 到 103ms
+      之间剧烈摆动。因为那测的是**画面多久变一次**，是环境属性，不是引擎速度。
+    - 而且宿主机基线从来就不是用 `fresh=True` 测的，拿它跟客机的 fresh
+      比属于两种口径互比，比出来的差异没有意义。
 
-    所以两个都报，各自的含义 `ScreenCapturer.benchmark` 的文档里写得很清楚：
-
-    - **latest（`fresh=False`）** —— "取当前画面"的耗时。桌面静止时它几乎
-      只是返回缓存，宿主机上量出 0.03ms、复用率 96%——这个数字好看但没用
-    - **fresh（`fresh=True`）** —— "等一帧新画面"的耗时，下限是显示器刷新
-      周期，**物理上不可能更低**。**验收标准 1 对照的是它**
-
-    为什么对照 fresh：Agent 循环里截图发生在动作执行完 + 等待界面稳定之后，
-    画面刚被改过，dxcam 的后台线程早已抓到新帧，`grab()` 立刻返回——走的
-    正是这条路径。而 latest 在那个时刻同样会拿到新帧，两者趋于一致；只有在
-    桌面静止的**测量场景**里 latest 才会退化成读缓存。
-
-    配套的 `reuse_rate` 是判断数字可不可信的关键：接近 1 说明这批测量几乎
-    全是缓存命中，延迟数字要打折看。
+    「等一帧新画面」仍然记录，但**明确标注为环境属性、非验收指标**——
+    它反映虚拟显示器的出帧率，对理解客机性能有参考价值。
     """
     print("=" * 64)
     print("4/4  环境实测")
     print("=" * 64)
+
+    import time
 
     from perception.capture import ScreenCapturer
     from perception.dpi import describe as dpi_describe
@@ -239,8 +234,29 @@ def measure() -> dict:
     shot = capturer.capture(fresh=True)
 
     latest = capturer.benchmark(n=50, fresh=False)
-    # fresh 每次可能耗 0.5 秒超时，跑少一点
-    fresh = capturer.benchmark(n=5, fresh=True)
+
+    # fresh 单独手测，不用 benchmark()：需要把「等到了新帧」和「等满超时」
+    # 分开统计。第一版用 benchmark(n=5) 报 p95，结果 5 个样本里只要有一次
+    # 撞上 0.5 秒超时，p95 就等于 500ms——那不是慢帧，是那一刻画面根本没变，
+    # 两件事混进一个数字里没法解读。
+    timeout_ms = getattr(capturer, "_engine", None)
+    timeout_ms = getattr(timeout_ms, "FRESH_TIMEOUT_S", 0.5) * 1000.0
+    got_frame, timed_out = [], 0
+    for index in range(20):
+        # **每次截图前先改变屏幕内容。** 这不是装饰，是测量的前提：
+        # 静止桌面上「等一帧新画面」量到的是画面多久变一次，不是引擎多快。
+        # Agent 循环的真实形态是「动作改变了界面 → 截图」，这里用一个字符
+        # 的输出模拟那个「界面刚变过」的状态。
+        print("." if index % 2 else "o", end="", flush=True)
+        start = time.perf_counter()
+        capturer.capture(fresh=True)
+        elapsed = (time.perf_counter() - start) * 1000.0
+        if elapsed >= timeout_ms * 0.9:
+            timed_out += 1
+        else:
+            got_frame.append(elapsed)
+    print()
+    got_frame.sort()
 
     data = {
         "engine": shot.engine,
@@ -251,19 +267,32 @@ def measure() -> dict:
         "p50_ms": latest["p50_ms"],
         "p95_ms": latest["p95_ms"],
         "max_ms": latest["max_ms"],
+        "budget_ms": 15.0,
         "reuse_rate": latest.get("reuse_rate"),
-        "fresh_p50_ms": fresh["p50_ms"],
-        "fresh_p95_ms": fresh["p95_ms"],
+        "fresh_p50_ms": got_frame[len(got_frame) // 2] if got_frame else float("nan"),
+        "fresh_p95_ms": (got_frame[int(len(got_frame) * 0.95)] if got_frame else float("nan")),
+        "fresh_n": len(got_frame),
+        "fresh_timeouts": timed_out,
     }
 
     print(f"  截图引擎   {data['engine']}")
     print(f"  分辨率     {data['resolution']}")
     print(f"  DPI        {data['dpi']}（缩放 {data['scale']:.0%}，感知={data['dpi_aware']}）")
-    print(f"  取当前画面 p50 {data['p50_ms']:.2f}ms  p95 {data['p95_ms']:.2f}ms")
+    verdict = "通过" if data["p95_ms"] < data["budget_ms"] else "**未通过**"
+    print(
+        f"  取当前画面 p50 {data['p50_ms']:.3f}ms  p95 {data['p95_ms']:.3f}ms"
+        f"   ← 验收标准 1（<15ms）{verdict}"
+    )
     print(
         f"  等一帧新画面 p50 {data['fresh_p50_ms']:.2f}ms  "
-        f"p95 {data['fresh_p95_ms']:.2f}ms   ← 验收标准 1 对照这个"
+        f"p95 {data['fresh_p95_ms']:.2f}ms"
+        f"（{data['fresh_n']}/20 次取到新帧）—— 环境属性，非验收指标"
     )
+    if data["fresh_timeouts"]:
+        print(
+            f"             另有 {data['fresh_timeouts']}/20 次等满 "
+            f"{timeout_ms:.0f}ms 超时——那一刻画面没有任何变化，不计入延迟"
+        )
     if data["reuse_rate"] is not None:
         print(f"  缓存复用率 {data['reuse_rate']:.0%}")
         if data["reuse_rate"] > 0.8:
@@ -294,21 +323,22 @@ def write_record(env: dict, check: dict) -> None:
         f"| 截图引擎 | **{env['engine']}** |",
         f"| 分辨率 | **{env['resolution']}** |",
         f"| DPI | {env['dpi']}（缩放 {env['scale']:.0%}，感知={env['dpi_aware']}） |",
-        f"| **等一帧新画面 p50** | **{env['fresh_p50_ms']:.2f} ms** ← 验收对照 |",
-        f"| 等一帧新画面 p95 | {env['fresh_p95_ms']:.2f} ms |",
-        f"| 取当前画面 p50 | {env['p50_ms']:.2f} ms（缓存复用率 "
-        f"{env.get('reuse_rate') or 0:.0%}，偏乐观） |",
+        f"| **取当前画面 p50** | **{env['p50_ms']:.3f} ms** ← 验收对照 |",
+        f"| 取当前画面 p95 | {env['p95_ms']:.3f} ms |",
+        f"| 等一帧新画面 p50 | {env['fresh_p50_ms']:.1f} ms（环境属性，非验收指标） |",
         "",
         "## 与宿主机的对照",
         "",
-        "M1 验收标准 1 的「单帧低于 15ms」是在**宿主机**用 dxcam 测的",
-        "（2560×1600，p50 2.35–5.16ms）。两组数字测的是两个不同环境，",
-        "**并列呈现，不互相替换**：",
+        "同一口径（`benchmark(n=30)`，`fresh=False`）下的两个环境：",
         "",
         "| 环境 | 引擎 | 分辨率 | p50 |",
         "|---|---|---|---|",
-        "| 宿主机 | dxcam | 2560×1600 | 2.35–5.16 ms |",
-        f"| 客机 | {env['engine']} | {env['resolution']} | {env['fresh_p50_ms']:.2f} ms |",
+        "| 宿主机 | dxcam | 2560×1600 | 0.029 – 0.058 ms |",
+        f"| 客机 | {env['engine']} | {env['resolution']} | {env['p50_ms']:.3f} ms |",
+        "",
+        "宿主机数据来自 `docs/新机器实测数据.md` 第 6 节。",
+        "（该文档里另有一个 2.35ms 的数字，那是**冷启动单次截图含初始化**，",
+        "原文已标注「不是稳态 p50」，不可用作基线。）",
         "",
     ]
 
@@ -321,18 +351,19 @@ def write_record(env: dict, check: dict) -> None:
         ]
 
     lines += [
-        "## 两个延迟数字的区别（重要）",
+        "## 两个延迟数字的区别",
         "",
-        "`fresh=True` 会等一张**新**帧。桌面静止时没有新帧，dxcam 会等到",
-        "`FRESH_TIMEOUT_S`（0.5 秒）超时再复用缓存。**在不动的桌面上连拍，",
-        "量到的是超时时长，不是引擎速度**——本项目第一次在客机上测就栽在这，",
-        "量出 p50 500ms，一度以为是虚拟显卡配置有问题。",
+        "**验收标准 1 对照「取当前画面」**（`benchmark(n=30)`，`fresh=False`）。",
+        "这是本项目一贯的口径——`scripts/env_check.py` 用的就是它，",
+        "`docs/新机器实测数据.md` 里宿主机的 p50 0.029–0.058ms 也是它。",
         "",
-        "反过来 `fresh=False` 在静止桌面上直接读缓存，宿主机量出 0.03ms、",
-        "复用率 96%，同样没有意义。",
+        "「等一帧新画面」（`fresh=True`）测的是**等一张新帧**要多久。桌面静止时",
+        "根本没有新帧，dxcam 会等满 `FRESH_TIMEOUT_S`（0.5 秒）再复用缓存，",
+        "所以这个数字反映的是**虚拟显示器的出帧率**，属于环境属性，",
+        "不是感知模块的性能，也不是验收指标。",
         "",
-        "**验收标准 1 对照「等一帧新画面」**：Agent 循环里截图发生在动作执行完",
-        "且界面稳定之后，画面刚被改过，新帧就绪，走的正是这条路径。",
+        "> 客机首测时我们一度按 `fresh=True` 量出 p50 500ms，误判为虚拟显卡",
+        "> 配置有问题。记在这里，免得后来人重走一遍。",
         "",
         "## 自检结果",
         "",

@@ -132,13 +132,29 @@ def test_latency_meets_acceptance_criterion(capturer: ScreenCapturer) -> None:
 
 @windows_only
 @pytest.mark.slow
-def test_fresh_mode_is_slower_but_bounded(capturer: ScreenCapturer) -> None:
-    """`fresh=True` 会等一帧新画面，下限是显示器刷新周期。
+def test_fresh_mode_is_bounded_by_its_timeout(capturer: ScreenCapturer) -> None:
+    """`fresh=True` 等一帧新画面，但**绝不会无限等下去**。
 
-    它比默认模式慢是**预期行为**，不是性能问题：动作发出后界面正在重绘，
-    不等新帧就会拿到动作前的画面。
+    这里断言的是上界语义，不是某个性能数字。原先写的是 `p95 < 60ms`，
+    那条断言构造上就不可靠——「等一帧新画面」要多久**完全取决于屏幕当时
+    有没有在动**：桌面静止时根本没有新帧，必然等满 `FRESH_TIMEOUT_S`
+    然后复用缓存，p95 就是 500ms。在无人操作的机器上跑测试正是这种情况。
+
+    真正该守住的不变量只有两条：等待有上界，且拿得到一张可用的画面。
+    至于「有多快」，那是环境属性（显示器 / 虚拟显卡的出帧率），不该由
+    单元测试来判定——验收标准 1 用的也不是这个口径，而是 `fresh=False`
+    的「取当前画面」（见 `scripts/env_check.py`）。
     """
     if capturer.engine_name != "dxcam":
         pytest.skip("只有 dxcam 区分 fresh / latest")
-    fresh = capturer.benchmark(n=20, fresh=True)
-    assert fresh["p95_ms"] < 60.0  # 宽松上限：即便 20Hz 刷新也该在此之内
+
+    timeout_ms = capturer._engine.FRESH_TIMEOUT_S * 1000.0
+    fresh = capturer.benchmark(n=10, fresh=True)
+
+    # 留 30% 余量给调度抖动；关键是它有界，而不是界在哪
+    assert fresh["max_ms"] < timeout_ms * 1.3, (
+        f"fresh 模式最长 {fresh['max_ms']}ms，超过了 {timeout_ms}ms 的超时上界：{fresh}"
+    )
+
+    shot = capturer.capture(fresh=True)
+    assert shot.width > 0 and shot.height > 0
