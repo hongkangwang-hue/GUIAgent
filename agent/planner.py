@@ -73,6 +73,35 @@ ACTION_VERBS = (
 )
 
 
+#: 动作词后面跟这些字，说明它是名词的一部分，不是一个动作。
+#: 「输入框」不是在输入，「关闭按钮」不是在关闭，「打开方式」不是在打开。
+_NOUN_SUFFIXES = ("框", "按钮", "键", "栏", "菜单", "选项", "窗口", "区", "方式", "项")
+
+#: 引号里的内容是被操作对象的名字，不是动作。模型经常写
+#: 「点击文件菜单中的"打开"选项」——那个"打开"是菜单项的名字。
+_QUOTED = re.compile(r"[「『\"'“‘]([^」』\"'”’]*)[」』\"'”’]")
+
+
+def _action_verbs(goal: str) -> list[str]:
+    """数一条子目标里真正的动作词。
+
+    **不能用纯子串匹配。** 中文里动作词做名词构词成分太常见了，
+    实测一次拆解就误报三条：「点击测试消息程序的输入框」被判成
+    「点击 + 输入」，「点击右上角的关闭按钮」被判成「点击 + 关闭」，
+    「点击文件菜单中的"打开"选项」被判成「点击 + 打开」。
+
+    这些假警告本身不挡执行，但它们会进轨迹 meta，M4 按警告分类
+    统计失败原因时会被整体带偏——**噪声混进标签比没有标签更糟**。
+
+    所以先把引号内容和名词性搭配抹掉，再数。
+    """
+    masked = _QUOTED.sub(lambda m: "　" * (len(m.group(0))), goal)
+    for verb in ACTION_VERBS:
+        for suffix in _NOUN_SUFFIXES:
+            masked = masked.replace(verb + suffix, "　" * (len(verb) + len(suffix)))
+    return [v for v in ACTION_VERBS if v in masked]
+
+
 class PlanError(RuntimeError):
     """拆解失败。"""
 
@@ -155,7 +184,7 @@ class Plan:
                     }
                 )
 
-            verbs = [v for v in ACTION_VERBS if v in task.goal]
+            verbs = _action_verbs(task.goal)
             if len(verbs) > 1:
                 warnings.append(
                     {

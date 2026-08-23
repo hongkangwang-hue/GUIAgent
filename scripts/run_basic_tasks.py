@@ -157,7 +157,7 @@ def main() -> int:
     for task in tasks:
         check = SuccessCheck.from_spec(task.get("success_check"))
         max_steps = args.max_steps or task.get("max_steps", 12)
-        print(f"── {task['title']}（{task['name']}）  上限 {max_steps} 步")
+        print(f"── {task['title']}（{task['name']}）  每子任务上限 {max_steps} 步")
 
         for attempt in range(1, args.repeats + 1):
             print(f"   第 {attempt}/{args.repeats} 次")
@@ -199,7 +199,13 @@ def main() -> int:
                 time.sleep(1.5)  # 等界面稳定，避免拿到中间态
                 record.verified, record.verify_detail = check.run()
             else:
-                record.verified, record.verify_detail = False, "演练模式未执行，不判定"
+                # 演练也把判据跑一遍，但**不计入成功**。
+                # 判据全是只读的（查进程、查窗口标题、读文件），跑一遍没有副作用；
+                # 而 YAML 里判据写错（类型名拼错、参数对不上、路径写错）如果要等到
+                # 实机 25 轮跑完才发现，那 25 轮就白跑了。这里让它当场暴露。
+                _, detail = check.run()
+                record.verified = False
+                record.verify_detail = f"[演练不计分] 判据当前状态：{detail}"
 
             mark = "✓" if record.verified else "✗"
             print(
@@ -207,7 +213,7 @@ def main() -> int:
                 f"  步数 {record.steps}  用时 {record.duration_s}s"
                 f"  模型自报完成={record.model_said_done}"
             )
-            if not record.verified and args.execute:
+            if not record.verified:
                 print(f"        {record.verify_detail[:150]}")
             records.append(record)
         print()
