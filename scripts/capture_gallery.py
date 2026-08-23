@@ -176,6 +176,17 @@ def main() -> int:
 
     print()
     print(f"  UIA 原始     {result.uia_count:4d} 个  ({result.uia_ms:.0f}ms)")
+    # 截断原因决定该怎么调：time 就加预算，count 就提上限，depth 就加深度。
+    # 光看到「已截断」三个字是没法判断的，而遍历不完整会让按来源分项的
+    # 召回率低估 UIA 通道。
+    _uia = result.uia_stats or {}
+    if _uia.get("truncated_by", "none") != "none":
+        print(
+            f"             ↑ 被 {_uia['truncated_by']} 截断"
+            f"（访问 {_uia.get('visited', '?')} 个节点，"
+            f"最深 {_uia.get('max_depth_reached', '?')} 层）"
+            f" —— 用 --uia-budget 加预算"
+        )
     print(f"  OCR 原始     {result.ocr_count:4d} 个  ({result.ocr_ms:.0f}ms)")
     print(f"  融合去重后   {result.fused_count:4d} 个  (丢弃 {result.dropped_by_dedupe} 个重复)")
     print(f"  识别总耗时   {result.total_ms:.0f}ms")
