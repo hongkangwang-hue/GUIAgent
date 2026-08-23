@@ -39,7 +39,7 @@ from perception.visualizer import save_annotated  # noqa: E402
 OUTPUT_DIR = Path("outputs/gallery")
 
 
-def build_detector(use_ocr: bool, use_gpu: bool) -> ElementDetector:
+def build_detector(use_ocr: bool, use_gpu: bool, budget_ms: float = 8000.0) -> ElementDetector:
     ocr_engine = None
     if use_ocr:
         try:
@@ -52,7 +52,13 @@ def build_detector(use_ocr: bool, use_gpu: bool) -> ElementDetector:
                 print("[!] PaddleOCR 不可用，本次只用 UIA 通道")
         except ImportError as exc:
             print(f"[!] PaddleOCR 未安装（{exc}），本次只用 UIA 通道")
-    return ElementDetector(ocr_engine=ocr_engine, uia_tree=UIATree())
+    # UIA 默认 1500ms 的遍历预算是给 Agent 循环定的——那里每步都要抓，
+    # 慢一点就拖垮整个任务。**但图集采集是离线的**，一张图多花两秒无所谓，
+    # 而被截断的元素树会让「按来源分项统计的召回率」低估 UIA 通道。
+    #
+    # 实测：客机上设置页面 1500ms 只抓到 16 个就被掐断，OCR 却有 80 个，
+    # 这个对比是假的。
+    return ElementDetector(ocr_engine=ocr_engine, uia_tree=UIATree(time_budget_ms=budget_ms))
 
 
 def main() -> int:
@@ -64,6 +70,16 @@ def main() -> int:
     parser.add_argument("--no-uia", action="store_true", help="只用 OCR 通道")
     parser.add_argument("--gpu", action="store_true", help="OCR 走 GPU")
     parser.add_argument("--desktop", action="store_true", help="抓整个桌面而非前台窗口的元素树")
+    parser.add_argument(
+        "--uia-budget",
+        type=float,
+        default=8000.0,
+        help=(
+            "UIA 遍历时间预算（毫秒）。默认 8000，远高于 Agent 循环里用的 1500——"
+            "图集采集是离线的，多花两秒无所谓，而遍历被截断会让按来源分项的"
+            "召回率低估 UIA 通道"
+        ),
+    )
     args = parser.parse_args()
 
     for remaining in range(int(args.delay), 0, -1):
@@ -72,7 +88,7 @@ def main() -> int:
     if args.delay:
         print("\r" + " " * 40 + "\r", end="")
 
-    detector = build_detector(use_ocr=not args.no_ocr, use_gpu=args.gpu)
+    detector = build_detector(use_ocr=not args.no_ocr, use_gpu=args.gpu, budget_ms=args.uia_budget)
 
     with ScreenCapturer() as capturer:
         window_title = get_foreground_window_title()
@@ -170,7 +186,10 @@ def main() -> int:
     print(f"已追加 {index_path}")
 
     existing = len(list(OUTPUT_DIR.glob("*.raw.png")))
-    print(f"图集当前共 {existing} 张" + ("（交付要求不少于 10 张，召回率评测需 20 张）" if existing < 20 else " ✓"))
+    print(
+        f"图集当前共 {existing} 张"
+        + ("（交付要求不少于 10 张，召回率评测需 20 张）" if existing < 20 else " ✓")
+    )
     return 0
 
 

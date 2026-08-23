@@ -58,7 +58,7 @@ ELEMENT_TYPES = {
 }
 
 
-def annotate(image_path: Path, existing: dict | None = None) -> dict:
+def annotate(image_path: Path, existing: dict | None = None, scale: float = 0.0) -> dict:
     import cv2
 
     image = cv2.imdecode(
@@ -68,7 +68,27 @@ def annotate(image_path: Path, existing: dict | None = None) -> dict:
         raise SystemExit(f"读不出图片：{image_path}")
 
     height, width = image.shape[:2]
-    print(f"图片 {width}×{height}")
+
+    # 截图和屏幕一样大时，标注窗口连同标题栏会超出屏幕，右下角根本够不着。
+    # 客机就是这种情况：1920×1080 的图配 1920×1080 的屏。
+    #
+    # 缩小显示，画完再把坐标按比例还原。代价是精度：0.7 倍下手抖 1px 等于
+    # 真实 1.4px，对 20-40px 高的控件可以接受；`--scale 1` 可以关掉。
+    if scale <= 0:
+        scale = min(1.0, 1280 / width, 720 / height)
+    scale = max(0.2, min(1.0, scale))
+
+    view = image
+    if scale < 1.0:
+        view = cv2.resize(
+            image, (int(width * scale), int(height * scale)), interpolation=cv2.INTER_AREA
+        )
+
+    print(f"图片 {width}×{height}", end="")
+    if scale < 1.0:
+        print(f"，标注窗口按 {scale:.2f} 倍显示（坐标会自动还原）")
+    else:
+        print()
     print()
     print("  拖拽画框 → 回车/空格 确认 → 继续画下一个 → ESC 结束")
     print("  只标任务相关元素（按钮 / 菜单项 / 输入框 / 列表项 / 标签页 / 复选框）")
@@ -77,12 +97,25 @@ def annotate(image_path: Path, existing: dict | None = None) -> dict:
 
     window = "annotate (ESC 结束)"
     # showCrosshair=True 让边缘对齐更容易；fromCenter=False 是从左上角拖
-    boxes = cv2.selectROIs(window, image, showCrosshair=True, fromCenter=False)
+    boxes = cv2.selectROIs(window, view, showCrosshair=True, fromCenter=False)
     cv2.destroyAllWindows()
 
     if len(boxes) == 0:
         print("没有画任何框，退出")
         return existing or {}
+
+    if scale < 1.0:
+        # 还原到原图坐标。真值必须存原图坐标——检测结果是在原图上算的，
+        # 两边坐标系不一致的话召回率会全错，而且错得看不出来。
+        boxes = [
+            (
+                int(round(x / scale)),
+                int(round(y / scale)),
+                int(round(w / scale)),
+                int(round(h / scale)),
+            )
+            for x, y, w, h in boxes
+        ]
 
     print(f"\n共 {len(boxes)} 个框。逐个输入标签：")
     print("  格式：<文字>  或  <文字>|<类型编号>")
@@ -116,6 +149,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="标注真值，供召回率评测使用")
     parser.add_argument("image", help="要标注的原图（*.raw.png，不要用带框的那张）")
     parser.add_argument("--append", action="store_true", help="追加到已有标注而非覆盖")
+    parser.add_argument(
+        "--scale",
+        type=float,
+        default=0.0,
+        help=(
+            "标注窗口的显示缩放。0（默认）自动适配到 1280×720 以内——"
+            "截图和屏幕一样大时窗口会超出屏幕，右下角够不着。"
+            "坐标会自动还原成原图坐标，传 1 可关闭缩放"
+        ),
+    )
     args = parser.parse_args()
 
     image_path = Path(args.image)
@@ -131,9 +174,12 @@ def main() -> int:
     existing = None
     if gt_path.exists():
         existing = json.loads(gt_path.read_text(encoding="utf-8"))
-        print(f"已有标注 {len(existing['elements'])} 个" + ("，本次追加" if args.append else "，本次覆盖"))
+        print(
+            f"已有标注 {len(existing['elements'])} 个"
+            + ("，本次追加" if args.append else "，本次覆盖")
+        )
 
-    result = annotate(image_path, existing)
+    result = annotate(image_path, existing, scale=args.scale)
     if not result:
         return 0
 
