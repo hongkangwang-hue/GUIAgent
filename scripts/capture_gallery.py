@@ -39,7 +39,13 @@ from perception.visualizer import save_annotated  # noqa: E402
 OUTPUT_DIR = Path("outputs/gallery")
 
 
-def build_detector(use_ocr: bool, use_gpu: bool, budget_ms: float = 8000.0) -> ElementDetector:
+def build_detector(
+    use_ocr: bool,
+    use_gpu: bool,
+    budget_ms: float = 8000.0,
+    depth: int = 20,
+    max_elements: int = 800,
+) -> ElementDetector:
     ocr_engine = None
     if use_ocr:
         try:
@@ -74,7 +80,11 @@ def build_detector(use_ocr: bool, use_gpu: bool, budget_ms: float = 8000.0) -> E
     # Agent 循环里仍用并行——那里延迟才是主要矛盾，且不做分项统计。
     return ElementDetector(
         ocr_engine=ocr_engine,
-        uia_tree=UIATree(time_budget_ms=budget_ms),
+        uia_tree=UIATree(
+            time_budget_ms=budget_ms,
+            max_depth=depth,
+            max_elements=max_elements,
+        ),
         parallel=False,
     )
 
@@ -88,6 +98,21 @@ def main() -> int:
     parser.add_argument("--no-uia", action="store_true", help="只用 OCR 通道")
     parser.add_argument("--gpu", action="store_true", help="OCR 走 GPU")
     parser.add_argument("--desktop", action="store_true", help="抓整个桌面而非前台窗口的元素树")
+    parser.add_argument(
+        "--uia-depth",
+        type=int,
+        default=20,
+        help=(
+            "UIA 遍历的最大层数。默认 20，高于 Agent 循环用的 12——"
+            "资源管理器一类控件树嵌套很深，12 层会被截断"
+        ),
+    )
+    parser.add_argument(
+        "--uia-max-elements",
+        type=int,
+        default=800,
+        help="UIA 元素数量上限。默认 800，高于 Agent 循环用的 400",
+    )
     parser.add_argument(
         "--uia-budget",
         type=float,
@@ -106,7 +131,13 @@ def main() -> int:
     if args.delay:
         print("\r" + " " * 40 + "\r", end="")
 
-    detector = build_detector(use_ocr=not args.no_ocr, use_gpu=args.gpu, budget_ms=args.uia_budget)
+    detector = build_detector(
+        use_ocr=not args.no_ocr,
+        use_gpu=args.gpu,
+        budget_ms=args.uia_budget,
+        depth=args.uia_depth,
+        max_elements=args.uia_max_elements,
+    )
 
     with ScreenCapturer() as capturer:
         window_title = get_foreground_window_title()
@@ -115,12 +146,15 @@ def main() -> int:
         if window_title:
             print(f"前台窗口：{window_title}")
 
-        result = detector.detect(
-            shot,
-            use_uia=not args.no_uia,
-            use_ocr=not args.no_ocr,
-            foreground_only=not args.desktop,
-        )
+        budget_ms = args.uia_budget
+    depth = args.uia_depth
+    max_elements = args.uia_max_elements
+    result = detector.detect(
+        shot,
+        use_uia=not args.no_uia,
+        use_ocr=not args.no_ocr,
+        foreground_only=not args.desktop,
+    )
 
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -198,12 +232,22 @@ def main() -> int:
     # 光看到「已截断」三个字是没法判断的，而遍历不完整会让按来源分项的
     # 召回率低估 UIA 通道。
     _uia = result.uia_stats or {}
-    if _uia.get("truncated_by", "none") != "none":
+    _reason = _uia.get("truncated_by", "none")
+    if _reason != "none":
+        # 三种截断原因对应三个不同的旋钮。第一版这里不管什么原因都提示
+        # 「用 --uia-budget 加预算」——而 budget 只管时间，遇到 depth /
+        # count 截断时照做完全无效。资源管理器就是 depth 截断（控件树
+        # 嵌套深），照那句提示调半天不会有任何变化。
+        _knob = {
+            "time": f"--uia-budget（当前 {budget_ms:.0f}ms）",
+            "depth": f"--uia-depth（当前 {depth} 层）",
+            "count": f"--uia-max-elements（当前 {max_elements} 个）",
+        }.get(_reason, "?")
         print(
-            f"             ↑ 被 {_uia['truncated_by']} 截断"
+            f"             ↑ 被 {_reason} 截断"
             f"（访问 {_uia.get('visited', '?')} 个节点，"
             f"最深 {_uia.get('max_depth_reached', '?')} 层）"
-            f" —— 用 --uia-budget 加预算"
+            f" —— 调 {_knob}"
         )
     print(f"  OCR 原始     {result.ocr_count:4d} 个  ({result.ocr_ms:.0f}ms)")
     print(f"  融合去重后   {result.fused_count:4d} 个  (丢弃 {result.dropped_by_dedupe} 个重复)")
