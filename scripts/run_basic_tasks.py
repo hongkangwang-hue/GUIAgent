@@ -60,6 +60,9 @@ class RunRecord:
     trajectory_id: str = ""
     error: str = ""
     latency: dict = field(default_factory=dict)
+    #: 起点是否成功建立。False 表示这一轮**无效**，既不算成功也不算失败。
+    precondition_ok: bool = True
+    precondition_detail: str = ""
 
 
 def _console() -> None:
@@ -156,12 +159,28 @@ def main() -> int:
     records: list[RunRecord] = []
     for task in tasks:
         check = SuccessCheck.from_spec(task.get("success_check"))
+        pre = SuccessCheck.from_spec(task.get("precondition")) if task.get("precondition") else None
         max_steps = args.max_steps or task.get("max_steps", 12)
         print(f"── {task['title']}（{task['name']}）  每子任务上限 {max_steps} 步")
 
         for attempt in range(1, args.repeats + 1):
             print(f"   第 {attempt}/{args.repeats} 次")
             run_reset(task.get("reset"), dry_run=not args.execute)
+
+            record = RunRecord(task=task["name"], title=task["title"], attempt=attempt)
+
+            # **起点检查在 reset 之后、Agent 之前。**
+            # reset 不一定成功，而「关闭应用」的判据是「进程应已退出」——
+            # 计算器没启动时它会直接打勾，Agent 什么都没做也算成功。
+            # 起点没建立的轮次记 invalid，不进成功率的分子也不进分母：
+            # 那是环境的失败，混进 Agent 的成功率里两个数字都不可信。
+            if pre is not None and args.execute:
+                record.precondition_ok, record.precondition_detail = pre.run()
+                if not record.precondition_ok:
+                    print(f"      [无效轮] 起点未建立：{record.precondition_detail[:120]}")
+                    print("        本轮不计入成功率。检查 reset 命令与测试环境。")
+                    records.append(record)
+                    continue
 
             backend = OpenAICompatBackend(config)
             session = Session(
@@ -173,7 +192,6 @@ def main() -> int:
             )
 
             started = time.perf_counter()
-            record = RunRecord(task=task["name"], title=task["title"], attempt=attempt)
             try:
                 result = session.run(task["instruction"])
                 record.loop_status = result.status
@@ -235,33 +253,50 @@ def render(records: list[RunRecord], args) -> None:
     print(f"{'任务':<14}{'成功率':>10}{'占比':>8}{'平均步数':>10}{'平均耗时':>10}{'模型自报':>10}")
     print("-" * 74)
 
+    # **无效轮不进分母。** 起点没建立的轮次既不是成功也不是失败，
+    # 把它当失败会低估能力，当成功会高估，只有排除掉这个数字才有意义。
     for group in by_task.values():
-        ok = sum(r.verified for r in group)
-        said = sum(r.model_said_done for r in group)
-        steps = sum(r.steps for r in group) / len(group)
-        secs = sum(r.duration_s for r in group) / len(group)
+        valid = [r for r in group if r.precondition_ok]
+        if not valid:
+            print(f"{group[0].title:<14}{'全部无效':>10}{'':>8}{'':>10}{'':>10}{'':>10}")
+            continue
+        ok = sum(r.verified for r in valid)
+        said = sum(r.model_said_done for r in valid)
+        steps = sum(r.steps for r in valid) / len(valid)
+        secs = sum(r.duration_s for r in valid) / len(valid)
         print(
             f"{group[0].title:<14}"
-            f"{f'{ok}/{len(group)}':>10}"
-            f"{ok / len(group):>8.0%}"
+            f"{f'{ok}/{len(valid)}':>10}"
+            f"{ok / len(valid):>8.0%}"
             f"{steps:>10.1f}"
             f"{secs:>9.1f}s"
-            f"{f'{said}/{len(group)}':>10}"
+            f"{f'{said}/{len(valid)}':>10}"
         )
 
-    total_ok = sum(r.verified for r in records)
-    total_said = sum(r.model_said_done for r in records)
+    valid_all = [r for r in records if r.precondition_ok]
+    invalid = [r for r in records if not r.precondition_ok]
+    total_ok = sum(r.verified for r in valid_all)
+    total_said = sum(r.model_said_done for r in valid_all)
     print("-" * 74)
-    print(
-        f"{'合计':<14}"
-        f"{f'{total_ok}/{len(records)}':>10}"
-        f"{total_ok / len(records):>8.0%}"
-        f"{'':>10}{'':>10}"
-        f"{f'{total_said}/{len(records)}':>10}"
-    )
+    if valid_all:
+        print(
+            f"{'合计':<14}"
+            f"{f'{total_ok}/{len(valid_all)}':>10}"
+            f"{total_ok / len(valid_all):>8.0%}"
+            f"{'':>10}{'':>10}"
+            f"{f'{total_said}/{len(valid_all)}':>10}"
+        )
+    else:
+        print("  没有一轮的起点建立成功，全部无效。")
+
+    if invalid:
+        print("")
+        print(f"  **无效轮 {len(invalid)}/{len(records)}（起点未建立，已排除出成功率）**")
+        for r in invalid[:5]:
+            print(f"    {r.title} 第{r.attempt}次：{r.precondition_detail[:90]}")
 
     # 模型自报完成 vs 程序化判定 —— 两者的差就是「模型以为做完了但没做完」
-    gap = [r for r in records if r.model_said_done and not r.verified]
+    gap = [r for r in valid_all if r.model_said_done and not r.verified]
     if gap:
         print(f"\n  **模型自报完成但判定未通过：{len(gap)} 次**")
         print("  这个差值是 M4 错误分类的重点素材——模型的自我判断不可信到什么程度，")

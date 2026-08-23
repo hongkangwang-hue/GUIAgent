@@ -13,6 +13,19 @@
 # 快照能做整机重置，但那要关机 / 恢复 / 开机，一轮几分钟。任务级 reset
 # 快得多，够用；快照留给「环境被搞乱了」的兜底。
 #
+# ## precondition：防止「起点没建立」被算成成功
+#
+# reset 不一定成功。`start calc` 可能因为计算器没装、启动慢过
+# `timeout /t 3`、或被系统策略挡住而没起来——而「关闭应用」的判据是
+# **进程应已退出**，计算器压根没启动时它会直接打勾。Agent 什么都没做，
+# 这一轮却记成成功。
+#
+# 演练时就撞见了这个：reset 是空跑的，close_app 的判据当场 ✓。
+#
+# 所以 reset 之后、Agent 开跑之前，先验一次起点是否真的建立了。
+# 没建立的轮次记为 **invalid**，不进成功率的分子也不进分母——
+# 那不是 Agent 的失败，是环境的失败，混在一起两个数字都不可信。
+#
 # ## 判据为什么常常是两条
 #
 # 多条判据不是保险，是**堵住不同的伪成功**。以「打开指定文件」为例：
@@ -88,6 +101,11 @@ tasks:
           pattern: "测试文档"
     reset:
       - taskkill /F /IM notepad.exe /T
+    # 目标文件不存在（setup_env.py 没跑）时任务不可能完成，
+    # 那是环境问题不是能力问题。
+    precondition:
+      - type: file_exists
+        path: C:/agent-test/测试文档.txt
     note: >
       文件由 setup_env.py 预置，内容固定。两条判据缺一不可，
       理由见文件头。
@@ -106,6 +124,11 @@ tasks:
         text: 你好世界
     reset:
       - python tasks/mock_messenger_reset.py
+    # 消息程序由人在另一个窗口里常驻。它要是关了，这一轮不是 Agent
+    # 做不到，是环境没准备好——记 invalid，别记失败。
+    precondition:
+      - type: window_title
+        pattern: 测试消息
     note: >
       操作对象是 tasks/mock_messenger.py —— 本地模拟程序，消息只写本地
       文件。不用真实聊天软件：那需要登录真实账号（违反 M0 数据边界），
@@ -126,6 +149,11 @@ tasks:
     reset:
       - start calc
       - timeout /t 3
+    # 没有这一条，计算器没启动时判据会直接打勾（见文件头）。
+    precondition:
+      - type: process
+        name: CalculatorApp.exe
+        should_run: true
     note: >
       大纲点名的另一个单步任务。reset 负责把计算器打开，
       否则「关闭它」这个任务没有起点。
