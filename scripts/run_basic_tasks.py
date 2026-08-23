@@ -42,7 +42,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 TASK_FILE = Path("tasks/basic_tasks.yaml")
 REPORT = Path("docs/m2-basic-tasks-report.md")
+
+#: 「最近一次」的固定路径，方便脚本引用。
 RAW = Path("docs/m2-basic-tasks-raw.json")
+#: **每次跑都另存一份带时间戳的。**
+#:
+#: 原来只写 RAW，于是一次 `--only send_message` 就把前面整整 25 轮的
+#: 数据覆盖没了 —— 那 25 轮跑了二十多分钟、花了真实 API 费用，
+#: 控制台输出滚过去就再也拿不回来。
+#:
+#: 评测数据是**跑一次就贵一次**的东西，默认行为不该是覆盖。
+RUNS = Path("docs/m2-runs")
 
 
 @dataclass
@@ -341,21 +351,28 @@ def render(records: list[RunRecord], args) -> None:
     if records:
         print(f"  单任务平均 {cost / len(records):.4f} 元")
 
-    RAW.parent.mkdir(parents=True, exist_ok=True)
-    RAW.write_text(
-        json.dumps(
-            {
-                "generated_at": datetime.now().isoformat(timespec="seconds"),
-                "executed": bool(args.execute),
-                "repeats": args.repeats,
-                "records": [asdict(r) for r in records],
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
+    payload = json.dumps(
+        {
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "executed": bool(args.execute),
+            "repeats": args.repeats,
+            "scope": args.only or "all",
+            "records": [asdict(r) for r in records],
+        },
+        ensure_ascii=False,
+        indent=2,
     )
+    RAW.parent.mkdir(parents=True, exist_ok=True)
+    RAW.write_text(payload, encoding="utf-8")
+
+    RUNS.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    scope = args.only or "all"
+    mode = "exec" if args.execute else "dry"
+    archive = RUNS / f"{stamp}-{scope}-{mode}.json"
+    archive.write_text(payload, encoding="utf-8")
     print(f"  原始数据 {RAW}")
+    print(f"  存档     {archive}")
     if not args.execute:
         print("\n  [演练模式] 未真正执行，成功率无意义。加 --execute 实机跑。")
 
