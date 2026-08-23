@@ -63,6 +63,9 @@ class RunRecord:
     #: 起点是否成功建立。False 表示这一轮**无效**，既不算成功也不算失败。
     precondition_ok: bool = True
     precondition_detail: str = ""
+    #: 子任务总数，与其中「一个动作都没执行就报完成」的个数。
+    subtasks: int = 0
+    empty_done: int = 0
 
 
 def _console() -> None:
@@ -206,6 +209,27 @@ def main() -> int:
                     for step in getattr(outcome.result, "records", [])
                 ]
                 record.latency = latency_breakdown(all_steps)
+
+                # **零动作报完成**：子任务以 done 收尾，但一个动作都没执行成功。
+                # 实测里这是失败任务的主要形态——模型的 thinking 甚至写着
+                # 「截图中未显示任何测试消息程序或发送按钮」，然后输出
+                # {"done": true}。Loop 收到 done 就切下一个子任务，于是
+                # 6 个子任务「全部成功」、整条轨迹 status=success，而任务
+                # 实际什么都没做。
+                #
+                # M2 是基线，不在这里加闸拦它——那是 M3 该做的改进，
+                # 提前塞进基线里 M3 就没有可比的对照。但**必须量出来**，
+                # 否则 M4 的错误分类只能靠人翻轨迹。
+                record.subtasks = len(result.outcomes)
+                record.empty_done = sum(
+                    1
+                    for outcome in result.outcomes
+                    if getattr(outcome.result, "status", "") == "done"
+                    and not any(
+                        getattr(step, "execution_status", "") == "ok"
+                        for step in getattr(outcome.result, "records", [])
+                    )
+                )
             except Exception as exc:  # noqa: BLE001 —— 单轮崩溃不该中断整批
                 record.error = f"{type(exc).__name__}: {exc}"[:200]
                 print(f"      [异常] {record.error}")
@@ -303,6 +327,14 @@ def render(records: list[RunRecord], args) -> None:
         print("  只有程序化判定能量出来。")
         for r in gap[:5]:
             print(f"    {r.title} 第{r.attempt}次：{r.verify_detail[:90]}")
+
+    subtasks = sum(r.subtasks for r in valid_all)
+    empty = sum(r.empty_done for r in valid_all)
+    if subtasks:
+        print("")
+        print(f"  **零动作报完成的子任务：{empty}/{subtasks}（{empty / subtasks:.0%}）**")
+        print("  子任务以 done 收尾，却一个动作都没执行成功。这是失败任务的主要形态，")
+        print("  也是 M3 要改的第一个东西——朴素 Loop 无条件相信模型的 done。")
 
     cost = sum(r.cost_cny for r in records)
     print(f"\n  累计成本 {cost:.4f} 元（{len(records)} 轮）")
