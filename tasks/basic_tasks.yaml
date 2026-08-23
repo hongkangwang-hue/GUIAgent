@@ -1,0 +1,132 @@
+# M2 基础任务集 —— 大纲第 4 周点名的 5 个任务
+#
+# 每个任务三段式：
+#   instruction    交给 Agent 的自然语言指令
+#   success_check  程序化判定（进程 / 窗口标题 / 文件内容）
+#   reset          跑之前把环境恢复到已知初始状态
+#
+# ## 为什么每个任务都要 reset
+#
+# M2 要求每任务跑 5 次算成功率。若第三次开始时环境已与第一次不同，
+# 这 5 次的数据就不可比。reset 让每一轮从同一个起点开始。
+#
+# 快照能做整机重置，但那要关机 / 恢复 / 开机，一轮几分钟。任务级 reset
+# 快得多，够用；快照留给「环境被搞乱了」的兜底。
+#
+# ## 判据为什么常常是两条
+#
+# 多条判据不是保险，是**堵住不同的伪成功**。以「打开指定文件」为例：
+#   只查进程     → 记事本开着但没打开那个文件，也算成功
+#   只查窗口标题 → 标题对，但可能是人手工开的
+# 两条同时要求才排除得掉。
+
+version: 1
+description: M2 基础任务集，5 个任务 × 5 次
+
+# 所有任务共用的测试目录。**客机内必须先跑 tasks/setup_env.py 建好。**
+env:
+  test_dir: C:/agent-test
+  message_log: C:/agent-test/messages.log
+  test_file: C:/agent-test/测试文档.txt
+
+tasks:
+  # ------------------------------------------------------------------ #
+  - name: open_browser
+    title: 打开浏览器
+    difficulty: 单步
+    instruction: 打开 Microsoft Edge 浏览器
+    max_steps: 6
+    # 判据只查进程。窗口标题在这里不可靠——Edge 首次启动可能停在
+    # 「欢迎」「导入数据」等不同页面上，标题不固定，而任务要的只是
+    # 「浏览器起来了」。
+    success_check:
+      - type: process
+        name: msedge.exe
+        should_run: true
+    reset:
+      - taskkill /F /IM msedge.exe /T
+    note: >
+      大纲点名的单步任务之一，M2 验收标准 2 期望接近 100%。
+      若这条都过不去，说明感知或控制链路有问题，而非模型能力问题。
+
+  # ------------------------------------------------------------------ #
+  - name: search_content
+    title: 搜索指定内容
+    difficulty: 多步
+    instruction: 打开 Microsoft Edge，在地址栏搜索「Python 官方文档」
+    max_steps: 12
+    # 标题判据用 regex，因为搜索引擎会把查询词嵌进标题，
+    # 但前后缀（"- 搜索"、"- Bing"、"- Microsoft​ Edge"）各版本不同。
+    success_check:
+      mode: all
+      checks:
+        - type: process
+          name: msedge.exe
+          should_run: true
+        - type: window_title
+          pattern: "Python"
+          regex: false
+    reset:
+      - taskkill /F /IM msedge.exe /T
+    note: >
+      需要网络。客机走 NAT 可以联网。搜索结果页内容会变，
+      但标题里含查询词这一点是稳定的。
+
+  # ------------------------------------------------------------------ #
+  - name: open_file
+    title: 打开指定文件
+    difficulty: 多步
+    instruction: 用记事本打开 C:\agent-test\测试文档.txt
+    max_steps: 12
+    success_check:
+      mode: all
+      checks:
+        - type: process
+          name: notepad.exe
+          should_run: true
+        - type: window_title
+          pattern: "测试文档"
+    reset:
+      - taskkill /F /IM notepad.exe /T
+    note: >
+      文件由 setup_env.py 预置，内容固定。两条判据缺一不可，
+      理由见文件头。
+
+  # ------------------------------------------------------------------ #
+  - name: send_message
+    title: 发送消息
+    difficulty: 多步
+    instruction: 在「测试消息」程序里发送一条内容为「你好世界」的消息
+    max_steps: 12
+    # **这是最可靠的一条判据**：查的是任务真正产生的副作用（写进文件的
+    # 那行字），不受窗口 Z 序、焦点、渲染时机影响。
+    success_check:
+      - type: file_contains
+        path: C:/agent-test/messages.log
+        text: 你好世界
+    reset:
+      - python tasks/mock_messenger_reset.py
+    note: >
+      操作对象是 tasks/mock_messenger.py —— 本地模拟程序，消息只写本地
+      文件。不用真实聊天软件：那需要登录真实账号（违反 M0 数据边界），
+      且会向真人发出不可撤销的消息。
+
+  # ------------------------------------------------------------------ #
+  - name: close_app
+    title: 关闭应用
+    difficulty: 单步
+    instruction: 关闭计算器窗口
+    max_steps: 6
+    # 判据是**进程消失**，不是「点到了关闭按钮」。后者用截图也能看，
+    # 但点了不一定真关掉（可能弹了确认框、可能点到了最小化）。
+    success_check:
+      - type: process
+        name: CalculatorApp.exe
+        should_run: false
+    reset:
+      - start calc
+      - timeout /t 3
+    note: >
+      大纲点名的另一个单步任务。reset 负责把计算器打开，
+      否则「关闭它」这个任务没有起点。
+      注意 Windows 11 的计算器进程名是 CalculatorApp.exe，不是 calc.exe。
