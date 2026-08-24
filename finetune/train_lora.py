@@ -46,6 +46,20 @@ M3 D1 晚间要启动挂机训练，那时候才发现 bitsandbytes 装错了、
     python -m finetune.train_lora                             # 完整训练
     python -m finetune.train_lora --epochs 2 --lr 1e-4
     python -m finetune.train_lora --model Qwen/Qwen2.5-VL-3B-Instruct
+
+## 中断了怎么办
+
+    python -m finetune.train_lora --resume auto
+
+`auto` 自动找 `finetune/outputs/` 下最近一个含 checkpoint 的目录。
+也可以显式指定：`--resume finetune/outputs/20260824-150000`。
+
+checkpoint 每 `总步数 // 4` 步存一次（本项目 136 步 → 每 34 步），
+所以最多丢 34 步、约 50 分钟。**分几次跑完全可以**——训练是确定性的，
+中间停多久都不影响最终结果。
+
+**续跑时超参必须与上次一致**（batch / 梯度累积 / epoch / max_pixels）。
+改了的话优化器状态对不上，续出来的模型没有意义。
 """
 
 from __future__ import annotations
@@ -169,6 +183,34 @@ def build_messages(record: dict) -> list[dict]:
     ]
 
 
+def resolve_resume(value: str) -> Path | None:
+    """把 `--resume` 的取值变成一个可续跑的运行目录。
+
+    `auto` 时挑 `finetune/outputs/` 下**最近一个含 checkpoint 的目录**——
+    按目录名排序即可，因为目录名就是时间戳。
+
+    找不到就返回 None 并说明原因，**不静默当成新训练**：
+    以为在续跑而实际从头开始，跑完三小时才发现，比直接报错糟糕得多。
+    """
+    if value.lower() == "auto":
+        candidates = [
+            d
+            for d in sorted(OUT_DIR.glob("*"), reverse=True)
+            if d.is_dir() and any(d.glob("checkpoint-*"))
+        ]
+        if not candidates:
+            print(f"  [提示] {OUT_DIR} 下没有含 checkpoint 的目录，按新训练开始。")
+            return None
+        return candidates[0]
+
+    path = Path(value)
+    if not path.is_dir():
+        raise SystemExit(f"--resume 指向的目录不存在：{path}")
+    if not any(path.glob("checkpoint-*")):
+        raise SystemExit(f"{path} 下没有 checkpoint-* 子目录，无法续跑。")
+    return path
+
+
 def train(args) -> TrainStats:  # noqa: PLR0915 —— 训练脚本，线性叙事好读
     stats = TrainStats(model=args.model, smoke=args.smoke)
 
@@ -270,7 +312,14 @@ def train(args) -> TrainStats:  # noqa: PLR0915 —— 训练脚本，线性叙�
         return inputs
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    run_dir = OUT_DIR / ("smoke" if args.smoke else time.strftime("%Y%m%d-%H%M%S"))
+    resume_dir = resolve_resume(args.resume) if args.resume else None
+    if resume_dir is not None:
+        run_dir = resume_dir
+        print(f"  **续跑** {run_dir}")
+        print("     超参必须与上次一致（batch / 梯度累积 / epoch / max_pixels），")
+        print("     不然优化器状态对不上，续出来的模型没有意义。")
+    else:
+        run_dir = OUT_DIR / ("smoke" if args.smoke else time.strftime("%Y%m%d-%H%M%S"))
 
     # 总优化步数 = 样本数 / (batch × 梯度累积) × epoch。batch 固定为 1。
     if args.smoke:
@@ -327,7 +376,7 @@ def train(args) -> TrainStats:  # noqa: PLR0915 —— 训练脚本，线性叙�
 
     train_started = time.perf_counter()
     try:
-        result = trainer.train()
+        result = trainer.train(resume_from_checkpoint=bool(resume_dir))
         stats.steps = int(result.global_step)
         stats.epochs = round(float(result.metrics.get("epoch", 0.0)), 3)
     except Exception as exc:  # noqa: BLE001 —— 失败也要留下实测记录
@@ -370,6 +419,11 @@ def main() -> int:
     parser.add_argument("--grad-accum", type=int, default=8)
     parser.add_argument("--max-pixels", type=int, default=DEFAULT_MAX_PIXELS)
     parser.add_argument("--precision", default="auto", choices=["auto", "bf16", "fp16", "fp32"])
+    parser.add_argument(
+        "--resume",
+        default="",
+        help="从断点续跑。给运行目录（finetune/outputs/<时间戳>）或 auto 自动找最近的一次",
+    )
     parser.add_argument("--smoke", action="store_true", help="100 步冒烟，不保存权重")
     parser.add_argument("--max-steps", type=int, default=100, help="冒烟模式的步数")
     args = parser.parse_args()
