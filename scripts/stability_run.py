@@ -93,6 +93,8 @@ class Report:
     samples: list = field(default_factory=list)
     errors: dict = field(default_factory=dict)
     rss_slope_mb_per_min: float = 0.0
+    handle_slope_per_min: float = 0.0
+    thread_slope_per_min: float = 0.0
     crashed: bool = False
 
 
@@ -120,13 +122,21 @@ def _sample(process, started: float, rounds: int) -> Sample:
     )
 
 
-def _slope(samples: list[Sample]) -> float:
-    """RSS 对时间的最小二乘斜率，单位 MB/分钟。
+def _slope(samples: list[Sample], field_name: str = "rss_mb") -> float:
+    """某个资源指标对时间的最小二乘斜率，单位 <该指标单位>/分钟。
 
     **看趋势不看绝对值。** PaddleOCR 一加载就是几百 MB，那不是泄漏；
-    每分钟稳定涨几 MB 才是。
+    每分钟稳定涨才是。
+
+    句柄同样要算。第一次实测里 RSS 斜率 +1.69MB/分钟已经报了可疑，
+    而句柄从 369 涨到 1521（+52/分钟、4.1 倍）**更刺眼却没被评估** ——
+    脚本只盯着内存，漏掉了更强的那个信号。
     """
-    points = [(s.elapsed_s / 60.0, s.rss_mb) for s in samples if s.rss_mb > 0]
+    points = [
+        (s.elapsed_s / 60.0, float(getattr(s, field_name)))
+        for s in samples
+        if getattr(s, field_name) > 0
+    ]
     n = len(points)
     if n < 3:
         return 0.0
@@ -219,6 +229,10 @@ def main() -> int:  # noqa: PLR0915 —— 长跑脚本，线性叙事比拆函�
     scaler.register("planner", *space)
     executor = ActionExecutor(scaler, space_name="planner", dry_run=not args.execute)
 
+    # 后端跨轮复用。每轮新建会泄漏 httpx 连接池 —— 这个泄漏正是本脚本
+    # 第一次跑就测出来的（22 分钟句柄 369 → 1521）。
+    backend = OpenAICompatBackend(config)
+
     started = time.perf_counter()
     deadline = started + args.minutes * 60
     next_sample = started
@@ -244,7 +258,7 @@ def main() -> int:  # noqa: PLR0915 —— 长跑脚本，线性叙事比拆函�
 
             round_started = time.perf_counter()
             try:
-                backend = OpenAICompatBackend(config)
+                backend.reset_cost()
                 session = Session(
                     backend,
                     NativeGrounding(*space),
@@ -288,10 +302,13 @@ def main() -> int:  # noqa: PLR0915 —— 长跑脚本，线性叙事比拆函�
         report.crashed = True
         traceback.print_exc(file=sys.stderr)
 
+    backend.close()
     report.samples.append(asdict(_sample(process, started, index)))
     report.errors = dict(errors)
     samples = [Sample(**s) for s in report.samples]
-    report.rss_slope_mb_per_min = _slope(samples)
+    report.rss_slope_mb_per_min = _slope(samples, "rss_mb")
+    report.handle_slope_per_min = _slope(samples, "handles")
+    report.thread_slope_per_min = _slope(samples, "threads")
 
     render(report, samples)
     return 1 if report.crashed else 0
@@ -322,9 +339,20 @@ def render(report: Report, samples: list[Sample]) -> None:
         else:
             print("     未见持续上涨。")
     if samples:
-        print(f"  线程       {samples[0].threads} → {samples[-1].threads}")
+        print(
+            f"  线程       {samples[0].threads} → {samples[-1].threads}"
+            f"（{report.thread_slope_per_min:+.2f}/分钟）"
+        )
         if samples[-1].handles:
-            print(f"  句柄       {samples[0].handles} → {samples[-1].handles}")
+            print(
+                f"  句柄       {samples[0].handles} → {samples[-1].handles}"
+                f"（{report.handle_slope_per_min:+.1f}/分钟）"
+            )
+            # 阈值经验值：每分钟净增 10 个以上句柄，几小时的长跑就会出事
+            if report.handle_slope_per_min > 10.0:
+                print("     **可疑：句柄持续上涨，多半是某个资源每轮新建、从不释放。**")
+            else:
+                print("     未见持续上涨。")
 
     RAW.parent.mkdir(parents=True, exist_ok=True)
     RAW.write_text(json.dumps(asdict(report), ensure_ascii=False, indent=2), encoding="utf-8")
@@ -346,6 +374,12 @@ def render(report: Report, samples: list[Sample]) -> None:
             f"- RSS：起 {rss[0]:.0f}MB → 止 {rss[-1]:.0f}MB，峰值 {max(rss):.0f}MB",
             f"- RSS 斜率：**{report.rss_slope_mb_per_min:+.2f} MB/分钟**"
             + ("（可疑）" if report.rss_slope_mb_per_min > 1.0 else "（未见持续上涨）"),
+        ]
+    if samples and samples[-1].handles:
+        lines += [
+            f"- 句柄：{samples[0].handles} → {samples[-1].handles}，"
+            f"斜率 **{report.handle_slope_per_min:+.1f}/分钟**"
+            + ("（可疑）" if report.handle_slope_per_min > 10.0 else "（未见持续上涨）"),
         ]
     lines += [
         "",

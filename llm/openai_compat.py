@@ -37,6 +37,7 @@ M2 文档划死了这条：``langchain-community`` 里各家国产模型的封�
 from __future__ import annotations
 
 import base64
+import contextlib
 import logging
 import time
 from typing import TYPE_CHECKING, Any
@@ -435,7 +436,36 @@ class OpenAICompatBackend(LLMBackend):
     # ------------------------------------------------------------------ #
 
     def close(self) -> None:
+        """真正关掉底层的 HTTP 连接池。
+
+        **原来这里只是 `self._client = None`，那不够。** `ChatOpenAI`
+        持有 openai SDK 的客户端，客户端持有 httpx 的连接池，池里是活的
+        socket。把引用置空只是等 GC，而 GC 不保证及时。
+
+        实测代价：稳定性测试里每轮新建一个后端，22 分钟 16 轮之后句柄从
+        369 涨到 1521（+52/分钟，单调不降）。内存那 +1.69MB/分钟还能忍，
+        句柄照这个涨法长跑会先撞上系统限制。
+
+        SDK 的属性路径各版本不同（`root_client` 是较新的 langchain-openai
+        才有），所以逐个试，都失败也不抛——**关连接失败不该让调用方崩掉**，
+        那比泄漏还糟。
+        """
+        client = self._client
         self._client = None
+        if client is None:
+            return
+        for path in ("root_client", "root_async_client", "client", "async_client"):
+            target = getattr(client, path, None)
+            closer = getattr(target, "close", None)
+            if callable(closer):
+                with contextlib.suppress(Exception):
+                    closer()
+
+    def __enter__(self) -> OpenAICompatBackend:
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.close()
 
     def __repr__(self) -> str:
         return (

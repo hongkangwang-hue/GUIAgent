@@ -174,6 +174,16 @@ def main() -> int:
     scaler.register("planner", *space)
     executor = ActionExecutor(scaler, space_name="planner", dry_run=not args.execute)
 
+    # **后端跨轮复用，不是每轮新建。**
+    #
+    # 原来每轮 `OpenAICompatBackend(config)` 一个，从不 close()。每个后端
+    # 持有一个 ChatOpenAI，它持有 openai SDK 的 httpx 连接池 —— 稳定性测试
+    # 实测 22 分钟 16 轮之后句柄从 369 涨到 1521，单调不降。
+    #
+    # 成本要按轮统计，用 `reset_cost()` 而不是新建实例：前者是为这件事
+    # 准备的，后者顺带泄漏了一个连接池。
+    backend = OpenAICompatBackend(config)
+
     records: list[RunRecord] = []
     for task in tasks:
         check = SuccessCheck.from_spec(task.get("success_check"))
@@ -200,7 +210,7 @@ def main() -> int:
                     records.append(record)
                     continue
 
-            backend = OpenAICompatBackend(config)
+            backend.reset_cost()
             session = Session(
                 backend,
                 NativeGrounding(*space),
@@ -275,6 +285,7 @@ def main() -> int:
             records.append(record)
         print()
 
+    backend.close()
     render(records, args)
     return 0
 
