@@ -50,7 +50,9 @@
       "precondition_ok": true,
       "precondition_detail": "✓ 窗口标题命中 '测试消息 - Test Messenger'",
       "subtasks": 6,
-      "empty_done": 3
+      "empty_done": 3,
+      "excluded": true,
+      "exclusion_reason": "人为干预：执行期间操作了鼠标"
     },
     {
       "task": "send_message",
@@ -123,6 +125,15 @@
       "precondition_detail": "✓ 窗口标题命中 '测试消息 - Test Messenger'",
       "subtasks": 6,
       "empty_done": 0
+    }
+  ],
+  "exclusions": [
+    {
+      "task": "send_message",
+      "attempt": 2,
+      "reason": "人为干预：执行期间操作了鼠标，改变了窗口焦点",
+      "recorded_by": "操作者自述，2026-08-24",
+      "note": "标记而非删除。删掉的话没人知道这一批从 5 轮变成了 4 轮。"
     }
   ]
 }

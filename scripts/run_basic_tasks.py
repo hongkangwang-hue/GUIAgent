@@ -76,6 +76,11 @@ class RunRecord:
     #: 子任务总数，与其中「一个动作都没执行就报完成」的个数。
     subtasks: int = 0
     empty_done: int = 0
+    #: 事后剔除标记。**只标记，不删除**——删掉的话没人知道这一批
+    #: 从 5 轮变成了 4 轮。目前唯一的用途是记录人为干预：评测期间
+    #: 有人碰了鼠标，那一轮的起点被改过，既不算成功也不算失败。
+    excluded: bool = False
+    exclusion_reason: str = ""
 
 
 def _console() -> None:
@@ -287,10 +292,11 @@ def render(records: list[RunRecord], args) -> None:
     print(f"{'任务':<14}{'成功率':>10}{'占比':>8}{'平均步数':>10}{'平均耗时':>10}{'模型自报':>10}")
     print("-" * 74)
 
-    # **无效轮不进分母。** 起点没建立的轮次既不是成功也不是失败，
-    # 把它当失败会低估能力，当成功会高估，只有排除掉这个数字才有意义。
+    # **无效轮与剔除轮都不进分母。** 起点没建立、或人为干预过的轮次
+    # 既不是成功也不是失败，把它当失败会低估能力，当成功会高估，
+    # 只有排除掉这个数字才有意义。
     for group in by_task.values():
-        valid = [r for r in group if r.precondition_ok]
+        valid = [r for r in group if r.precondition_ok and not r.excluded]
         if not valid:
             print(f"{group[0].title:<14}{'全部无效':>10}{'':>8}{'':>10}{'':>10}{'':>10}")
             continue
@@ -307,8 +313,9 @@ def render(records: list[RunRecord], args) -> None:
             f"{f'{said}/{len(valid)}':>10}"
         )
 
-    valid_all = [r for r in records if r.precondition_ok]
+    valid_all = [r for r in records if r.precondition_ok and not r.excluded]
     invalid = [r for r in records if not r.precondition_ok]
+    dropped = [r for r in records if r.precondition_ok and r.excluded]
     total_ok = sum(r.verified for r in valid_all)
     total_said = sum(r.model_said_done for r in valid_all)
     print("-" * 74)
@@ -345,6 +352,12 @@ def render(records: list[RunRecord], args) -> None:
         print(f"  **零动作报完成的子任务：{empty}/{subtasks}（{empty / subtasks:.0%}）**")
         print("  子任务以 done 收尾，却一个动作都没执行成功。这是失败任务的主要形态，")
         print("  也是 M3 要改的第一个东西——朴素 Loop 无条件相信模型的 done。")
+
+    if dropped:
+        print("")
+        print(f"  **事后剔除 {len(dropped)} 轮（已排除出成功率）**")
+        for r in dropped:
+            print(f"    {r.title} 第{r.attempt}次：{r.exclusion_reason}")
 
     cost = sum(r.cost_cny for r in records)
     print(f"\n  累计成本 {cost:.4f} 元（{len(records)} 轮）")
