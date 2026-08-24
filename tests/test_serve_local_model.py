@@ -282,6 +282,40 @@ class TestChatCompletions:
         assert "out of memory" in response.json()["error"]["message"]
 
 
+class TestArgs:
+    """命令行参数与 `main()` 里读的属性必须对得上。
+
+    这一条是补一次真实事故：`--max-new-tokens` 漏加了，而 `main()` 已经在
+    用 `args.max_new_tokens`。**736 条单测全绿**——因为没有一条会去调
+    `main()`——于是 `AttributeError` 一路跑到用户启动服务那一刻才炸，
+    还是在权重都装完之后。
+    """
+
+    def test_默认值可解析(self):
+        from scripts.serve_local_model import DEFAULT_MAX_NEW_TOKENS, build_parser
+
+        args = build_parser().parse_args([])
+        assert args.max_new_tokens == DEFAULT_MAX_NEW_TOKENS
+        assert args.host == "127.0.0.1"  # 默认必须是安全的那个
+        assert args.offline is False
+
+    def test_main_读到的每个属性都存在(self):
+        """扫 `main()` 源码里所有 `args.xxx`，逐个确认解析器给得出来。
+
+        比逐条手写断言可靠：以后再加参数，忘了注册照样会被抓住。
+        """
+        import inspect
+        import re
+
+        from scripts import serve_local_model
+
+        source = inspect.getsource(serve_local_model.main)
+        used = set(re.findall(r"args\.([a-zA-Z_][a-zA-Z0-9_]*)", source))
+        parsed = vars(serve_local_model.build_parser().parse_args([]))
+        missing = used - parsed.keys()
+        assert not missing, f"main() 读了这些参数但解析器没注册：{sorted(missing)}"
+
+
 class TestProbes:
     def test_health_区分服务在不在与权重加载没加载(self, client):
         """客机连不上时先打这个。

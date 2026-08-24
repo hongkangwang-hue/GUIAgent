@@ -90,6 +90,7 @@ import base64
 import binascii
 import io
 import logging
+import os
 import sys
 import threading
 import time
@@ -270,7 +271,14 @@ def build_app(backend, cap: int = DEFAULT_MAX_NEW_TOKENS):
     return app
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """命令行参数。
+
+    **抽成独立函数是为了能测。** 上一版把 `--max-new-tokens` 漏掉了，而
+    `main()` 里已经在用 `args.max_new_tokens`——单测全绿（736 条），因为
+    没有一条测试会去调 `main()`，于是这个 `AttributeError` 一路跑到了
+    用户的服务启动那一刻，还是在权重都装完之后才炸。
+    """
     parser = argparse.ArgumentParser(description="把本地 Qwen2.5-VL 起成 OpenAI 兼容端点")
     parser.add_argument("--model", default="", help="模型名或本地路径")
     parser.add_argument("--adapter", default="", help="QLoRA adapter 目录，给了就是微调版")
@@ -284,9 +292,31 @@ def main() -> int:
     parser.add_argument(
         "--preload",
         action="store_true",
-        help="启动时就把权重装进显存，而不是等第一个请求。挂机跑评测时用",
+        help="启动时装权重并跑一次热身推理（含图），而不是等第一个请求。挂机跑评测时用",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--max-new-tokens",
+        type=int,
+        default=DEFAULT_MAX_NEW_TOKENS,
+        help=f"生成长度硬上限，服务端强制（默认 {DEFAULT_MAX_NEW_TOKENS}）",
+    )
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="彻底不联网：设 HF_HUB_OFFLINE，连启动时校验缓存的那几个请求也不发",
+    )
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+
+    # **必须在 import transformers 之前设。** huggingface_hub 在导入时就
+    # 读这两个变量，之后再改不生效。本模块把 transformers 的 import 放在
+    # `QwenVLLocalBackend._ensure_model` 里，所以这里设还来得及。
+    if args.offline:
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -330,11 +360,25 @@ def main() -> int:
         # 延迟数据，又很可能直接把客户端的 90 秒超时撞爆。
         print("  预加载权重……")
         backend._ensure_model()
-        print("  热身推理（首次前向要编译 CUDA kernel，会慢）……")
+        # **热身必须带图。** 纯文本热身只要 0.9 秒，因为它根本没碰视觉塔——
+        # 而实测那次 153.7 秒的首次调用是带图的。真正要预热的是视觉编码
+        # 那条路径（动态分辨率 + patch 化 + 视觉注意力的 kernel 选择）。
+        # 用一张和真实截图同尺寸的图，让它走完整条路。
+        from PIL import Image as _Image
+
+        print("  热身推理（首次带图前向要编译 CUDA kernel，会慢）……")
         warm = time.perf_counter()
         backend.generate(
-            [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
-            [],
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": _Image.new("RGB", (1024, 768), (30, 30, 30))},
+                        {"type": "text", "text": "hi"},
+                    ],
+                }
+            ],
+            [_Image.new("RGB", (1024, 768), (30, 30, 30))],
             max_new_tokens=8,
         )
         print(f"  就绪（热身 {time.perf_counter() - warm:.1f}s）\n")
