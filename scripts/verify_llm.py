@@ -369,7 +369,9 @@ def main() -> int:
 
     passed = [r for r in records if r["status"].startswith("通过")]
     print(f"\n通过 {len(passed)}/{len(records)} 家。")
-    if len(passed) < 2:
+    # 「至少测通两家」是对**完整验证**说的。单平台补测本来就只跑一家，
+    # 在那里提醒「当前不足」纯属噪声，还会让人以为验收退化了。
+    if full_run and len(passed) < 2:
         print("M1 D1 要求至少测通两家，当前不足。")
     return 0 if passed else 1
 
