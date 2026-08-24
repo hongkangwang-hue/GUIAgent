@@ -2,9 +2,17 @@
 
 做两件事：清空日志文件，把消息窗口提到前台。
 
-**不重启程序**：`mock_messenger.py` 由人在另一个窗口里保持运行，
-评测过程中不该被关掉。重启会改变窗口位置与大小，而那是 Agent 每轮
-面对的初始条件之一。
+**已经开着就不重启**：重启会改变窗口位置与大小，而那是 Agent 每轮面对的
+初始条件之一，每轮都换一次就没有「相同起点」可言了。
+
+**但完全没开时会自己拉起来。** 原来这里只报告「没找到窗口」，靠人记得
+先去另一个窗口手动 `python tasks/mock_messenger.py`。2026-08-24 的在线组
+实测就栽在这上面：5 轮全部因起点未建立作废，而作废是在 reset 之后才发现的
+——**一个纯手工的前置条件，代价是一整个任务的数据**。
+
+两件事要分清：
+- 「每轮重启」会破坏起点一致性 → 不做
+- 「一次都没起」是环境没准备好 → 该自动补上，而不是让人记着
 
 ## 为什么要提到前台
 
@@ -23,7 +31,9 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 TITLE = "测试消息"
@@ -35,8 +45,41 @@ LOG = (
 )
 
 
+#: 没开时最多等它把窗口画出来多久。tkinter 起窗口很快，5 秒足够宽松。
+LAUNCH_TIMEOUT_S = 5.0
+
+
+def _find_window(auto):
+    """找标题含 TITLE 的顶层窗口，没有就返回 None。"""
+    window = auto.GetRootControl().GetFirstChildControl()
+    while window:
+        if TITLE in (window.Name or ""):
+            return window
+        window = window.GetNextSiblingControl()
+    return None
+
+
+def launch() -> str:
+    """把 `mock_messenger.py` 拉起来，等窗口出现。
+
+    用 `Popen` 而不是 `run`：这是个 GUI 程序，会一直开着，等它退出就死锁了。
+    """
+    script = Path(__file__).with_name("mock_messenger.py")
+    if not script.exists():
+        return f"找不到 {script}"
+    subprocess.Popen(  # noqa: S603 - 固定路径，无外部输入
+        [sys.executable, str(script)],
+        cwd=str(script.parent.parent),
+        creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+    )
+    return f"已启动 {script.name}"
+
+
 def activate_window() -> str:
-    """把消息窗口提到前台。失败只报告，不中断——起点检查会兜住。"""
+    """把消息窗口提到前台；完全没开时先启动它。
+
+    失败只报告，不中断——起点检查会兜住，而它给的信息比这里更准确。
+    """
     if sys.platform != "win32":
         return "非 Windows，跳过"
     try:
@@ -45,15 +88,21 @@ def activate_window() -> str:
         return "uiautomation 未安装，跳过"
 
     try:
-        window = auto.GetRootControl().GetFirstChildControl()
-        while window:
-            if TITLE in (window.Name or ""):
-                window.SetActive()
-                return f"已激活 {window.Name!r}"
-            window = window.GetNextSiblingControl()
+        window = _find_window(auto)
+        if window is None:
+            note = launch()
+            deadline = time.monotonic() + LAUNCH_TIMEOUT_S
+            while window is None and time.monotonic() < deadline:
+                time.sleep(0.3)
+                window = _find_window(auto)
+            if window is None:
+                return f"{note}，但 {LAUNCH_TIMEOUT_S:.0f}s 内没等到窗口"
+            window.SetActive()
+            return f"{note}，窗口已就绪并激活"
+        window.SetActive()
+        return f"已激活 {window.Name!r}（本来就开着，未重启）"
     except Exception as exc:  # noqa: BLE001
         return f"激活失败：{exc}"
-    return f"没找到标题含 {TITLE!r} 的窗口——消息程序开着吗？"
 
 
 def main() -> int:
