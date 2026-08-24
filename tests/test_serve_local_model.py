@@ -9,6 +9,17 @@ M0 定的拓扑是「模型在宿主机 GPU 上，客机经 HTTP 调用 OpenAI �
 
 所以这些用例基本都在验一件事：客机发出去的东西，服务端能原样理解。
 全部用假后端，不加载权重、不碰 GPU。
+
+## 没装 fastapi 就整个跳过
+
+**服务端只跑在宿主机上**（GPU 在那儿），客机是纯客户端——它用
+`OpenAICompatBackend` 走 HTTP，装 fastapi 对它毫无用处。
+
+所以这里用 `importorskip` 而不是把 fastapi 写进客机的依赖：让客机为了
+让测试能收集起来，去装一个它运行时根本不加载的包，是本末倒置。
+
+**顶层 import 会在收集阶段就炸**，而 pytest 的收集错误是致命的——
+一个模块导不进来，`pytest tests/` 整个中断，另外七百多条测试一条都跑不了。
 """
 
 from __future__ import annotations
@@ -17,8 +28,11 @@ import base64
 import io
 
 import pytest
-from fastapi.testclient import TestClient
-from PIL import Image
+
+pytest.importorskip("fastapi", reason="服务端测试，只在装了 fastapi 的宿主机上跑")
+
+from fastapi.testclient import TestClient  # noqa: E402
+from PIL import Image  # noqa: E402
 
 from llm.base import TokenUsage
 from scripts.serve_local_model import build_app, to_hf_messages
