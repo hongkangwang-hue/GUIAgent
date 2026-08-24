@@ -106,13 +106,33 @@ def test_to_row_survives_missing_bbox() -> None:
 # ===================================================================== #
 
 
+def _missing(name: str) -> bool:
+    """这台机器上有没有装某个包。
+
+    客机只跑 Agent（感知 / 控制 / HTTP 客户端），数据集预处理与出图都在
+    宿主机上做，因此 pandas / pyarrow / matplotlib 在客机上本来就没有。
+    **让这些用例失败，等于让客机的测试套件永远有 3 个红色**——而一个总是
+    有失败的套件，会训练人忽略失败。跳过才是诚实的表示。
+    """
+    import importlib.util
+
+    return importlib.util.find_spec(name) is None
+
+
 def test_screenspot_v1_reads_bbox_as_normalized_xyxy(tmp_path) -> None:
     """v1 的 bbox 是 [0,1] 归一化的 xyxy。当成绝对像素解析会把整张图的
     元素全挤到左上角一个点上——而且不报错。"""
     from io import BytesIO
 
-    import pandas as pd
+    import pytest
     from PIL import Image
+
+    pd = pytest.importorskip("pandas", reason="数据集预处理只在宿主机上做")
+    # pandas 写 parquet 要一个引擎，两个都是可选依赖。缺了会在
+    # `to_parquet` 里抛 ImportError——错误指向 pandas 内部，看不出
+    # 是「这台机器没装引擎」还是「代码写错了」。
+    if all(_missing(name) for name in ("pyarrow", "fastparquet")):
+        pytest.skip("缺少 parquet 引擎（pyarrow / fastparquet），数据集预处理只在宿主机上做")
 
     buffer = BytesIO()
     Image.new("RGB", (800, 600), (0, 0, 0)).save(buffer, format="PNG")
@@ -563,8 +583,9 @@ def test_all_four_charts_render(tmp_path) -> None:
     （某个平台一条样本都没有、某个数据集缺席、面积列表为空）。这些在跑
     完整流水线前发现不了，而那时已经花了几分钟装载。
     """
-    import matplotlib
+    import pytest
 
+    matplotlib = pytest.importorskip("matplotlib", reason="出图只在宿主机上做")
     matplotlib.use("Agg")
     from data.charts import render_all
 
@@ -599,8 +620,9 @@ def test_all_four_charts_render(tmp_path) -> None:
 def test_element_size_chart_refuses_when_nothing_has_a_bbox(tmp_path) -> None:
     """ScreenAgent 训练集只有落点没有框。硬画会得到一张空图，
     比报错更难发现。"""
-    import matplotlib
+    import pytest
 
+    matplotlib = pytest.importorskip("matplotlib", reason="出图只在宿主机上做")
     matplotlib.use("Agg")
     from data.charts import apply_style, chart_element_sizes
 
