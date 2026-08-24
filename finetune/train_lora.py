@@ -329,7 +329,9 @@ def train(args) -> TrainStats:  # noqa: PLR0915 —— 训练脚本，线性叙�
         total_steps = max(1, int(per_epoch * args.epochs))
     warmup_steps = max(1, int(total_steps * 0.03))
     # 全程存 4-5 次。太密会拖慢训练也吃磁盘，太疏等于没有。
-    save_every = max(5, total_steps // 4)
+    # `--save-every` 可覆盖：一边用电脑一边训练时，OOM 风险高，
+    # 值得用更密的存点换更小的损失。
+    save_every = args.save_every or max(5, total_steps // 4)
     print(f"  总步数 {total_steps}    预热 {warmup_steps} 步    每 {save_every} 步存一次")
 
     training_args = TrainingArguments(
@@ -419,6 +421,12 @@ def main() -> int:
     parser.add_argument("--grad-accum", type=int, default=8)
     parser.add_argument("--max-pixels", type=int, default=DEFAULT_MAX_PIXELS)
     parser.add_argument("--precision", default="auto", choices=["auto", "bf16", "fp16", "fp32"])
+    parser.add_argument(
+        "--save-every",
+        type=int,
+        default=0,
+        help="每几步存一次 checkpoint。默认总步数的 1/4；边用电脑边训练时可调小",
+    )
     parser.add_argument(
         "--resume",
         default="",
