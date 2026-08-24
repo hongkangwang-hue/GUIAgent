@@ -279,7 +279,9 @@ def train(args) -> TrainStats:  # noqa: PLR0915 —— 训练脚本，线性叙�
         per_epoch = max(1, len(train_rows) // args.grad_accum)
         total_steps = max(1, int(per_epoch * args.epochs))
     warmup_steps = max(1, int(total_steps * 0.03))
-    print(f"  总步数 {total_steps}    预热 {warmup_steps} 步")
+    # 全程存 4-5 次。太密会拖慢训练也吃磁盘，太疏等于没有。
+    save_every = max(5, total_steps // 4)
+    print(f"  总步数 {total_steps}    预热 {warmup_steps} 步    每 {save_every} 步存一次")
 
     training_args = TrainingArguments(
         output_dir=str(run_dir),
@@ -297,8 +299,13 @@ def train(args) -> TrainStats:  # noqa: PLR0915 —— 训练脚本，线性叙�
         # 不用再拿比例去乘一个心算的总步数。
         warmup_steps=warmup_steps,
         logging_steps=1 if args.smoke else 10,
-        # 每 200 步存一次，训练中断不至于从头再来
-        save_steps=10**9 if args.smoke else 200,
+        # **按总步数算间隔，不是写死 200。**
+        #
+        # 写死 200 时踩过一次：本项目总步数只有 136（543 条 ÷ 梯度累积 8
+        # × 2 epoch），**一次都不会触发**。跑到第 130 步 OOM，三小时白费。
+        # 而这台机器的峰值显存实测 6984MB / 8151MiB，中途开个浏览器就可能
+        # 爆——checkpoint 不是可选项。
+        save_steps=10**9 if args.smoke else save_every,
         save_total_limit=3,
         gradient_checkpointing=True,
         bf16=stats.precision == "bf16",
