@@ -172,6 +172,7 @@ def evaluate(
     adapter: str = "",
     limit: int = 0,
     resume: bool = True,
+    load_4bit: bool = False,
 ) -> Path:
     """跑一档评测，逐条追加到 JSONL。"""
     from finetune.train_lora import SYSTEM_PROMPT
@@ -185,7 +186,9 @@ def evaluate(
     if limit:
         todo = todo[:limit]
 
-    predict, closer, label = _build_predictor(provider, model, local_model, adapter, SYSTEM_PROMPT)
+    predict, closer, label = _build_predictor(
+        provider, model, local_model, adapter, SYSTEM_PROMPT, load_4bit
+    )
 
     print("=" * 70)
     print("动作生成评测")
@@ -240,7 +243,14 @@ def evaluate(
     return out
 
 
-def _build_predictor(provider: str, model: str, local_model: str, adapter: str, system: str):
+def _build_predictor(
+    provider: str,
+    model: str,
+    local_model: str,
+    adapter: str,
+    system: str,
+    load_4bit: bool = False,
+):
     """返回 (predict, close, label)。
 
     **API 与本地两条路共用同一个提示词和同一套解析。** 分成两套的话，
@@ -268,11 +278,24 @@ def _build_predictor(provider: str, model: str, local_model: str, adapter: str, 
         from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
         processor = AutoProcessor.from_pretrained(local_model)
-        net = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            local_model,
-            dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-            device_map="auto",
-        )
+        dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+        kwargs = {"dtype": dtype, "device_map": "auto"}
+        if load_4bit:
+            # **与训练时的加载方式对齐。** 训练用的是 4-bit NF4，评测若用
+            # bf16，权重光是 6.2GB 就塞不进 8GB 卡，device_map="auto" 会把
+            # 一部分层卸到内存，每次前向都要在 CPU↔GPU 之间搬数据——慢好几倍。
+            #
+            # 数值上两者不完全等价，所以**同一组对比里必须前后一致**：
+            # before 用 bf16、after 用 4-bit 的话，差值里就混进了量化的影响。
+            from transformers import BitsAndBytesConfig
+
+            kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_compute_dtype=dtype,
+            )
+        net = Qwen2_5_VLForConditionalGeneration.from_pretrained(local_model, **kwargs)
         if adapter:
             from peft import PeftModel
 
@@ -417,6 +440,12 @@ def main() -> int:
     parser.add_argument("--model", default="", help="覆盖平台默认模型")
     parser.add_argument("--local", default="", help="走本地模型，给 HF 模型名或路径")
     parser.add_argument("--adapter", default="", help="LoRA adapter 目录，微调后评测用")
+    parser.add_argument(
+        "--load-4bit",
+        action="store_true",
+        help="按 4-bit NF4 加载，与训练时一致。8GB 卡上能全放进显存，快好几倍。"
+        "**同一组对比里前后必须一致**",
+    )
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--no-resume", action="store_true")
     parser.add_argument("--report", action="store_true", help="只汇总已有结果，不调模型")
@@ -462,6 +491,7 @@ def main() -> int:
         adapter=args.adapter,
         limit=args.limit,
         resume=not args.no_resume,
+        load_4bit=args.load_4bit,
     )
     print_summary(summarize(out))
     return 0
