@@ -34,6 +34,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from llm.base import PriceSheet
 
@@ -207,18 +208,54 @@ def load_dotenv_if_present(path: str = ".env") -> bool:
     自己解析而不是拉 python-dotenv：需求只有"KEY=VALUE 一行一条"，
     为此多一个依赖不划算。**已存在的环境变量不覆盖**——命令行里显式
     设的值应当优先于文件。
+
+    ## 编码要容错
+
+    Windows PowerShell 5.1 的 `Add-Content` 默认写 ANSI（简中环境即 GBK），
+    往 .env 里追加一行带中文的内容就会混进非 UTF-8 字节。此时严格按 UTF-8
+    读会抛 `UnicodeDecodeError`，堆栈停在 codecs 内部——**看不出是哪个
+    文件、哪一行、什么字符**，而真正的问题只是某一行编码不对。
+
+    所以按 UTF-8 → GBK → 忽略错误 三级降级读，并在降级时明确告知。
+    读得进来比读得纯粹重要：一个坏掉的 .env 不该让整个程序起不来。
     """
     if not os.path.exists(path):
         return False
-    with open(path, encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            key, value = key.strip(), value.strip().strip('"').strip("'")
-            if key and key not in os.environ:
-                os.environ[key] = value
+
+    text = None
+    for encoding in ("utf-8", "utf-8-sig", "gbk"):
+        try:
+            text = Path(path).read_text(encoding=encoding)
+        except (UnicodeDecodeError, LookupError):
+            continue
+        if encoding != "utf-8":
+            print(
+                f"[提示] {path} 不是 UTF-8（按 {encoding} 读出来了）。"
+                f"多半是 PowerShell 的 Add-Content 写进了 ANSI 字节，"
+                f"建议用记事本另存为 UTF-8。"
+            )
+        break
+    else:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+        print(f"[警告] {path} 编码无法识别，已忽略坏字节读入。请检查文件内容。")
+
+    seen: dict[str, int] = {}
+    for number, line in enumerate(text.splitlines(), start=1):
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip().strip('"').strip("'")
+        if not key:
+            continue
+        # 同名多行是手工追加时的常见事故，先到的生效，后面的提示出来。
+        # 静默取其一会让人对着一个"明明改了却不生效"的文件排查很久。
+        if key in seen:
+            print(f"[提示] {path} 第 {number} 行的 {key} 重复，沿用第 {seen[key]} 行的值。")
+            continue
+        seen[key] = number
+        if key not in os.environ:
+            os.environ[key] = value
     return True
 
 
