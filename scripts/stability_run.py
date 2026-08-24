@@ -1,0 +1,378 @@
+"""连续跑 N 分钟，看系统会不会崩、会不会泄漏 —— M2 验收标准 10。
+
+## 它和 run_basic_tasks 的区别
+
+`run_basic_tasks.py` 问的是「做得对不对」，这个脚本问的是
+**「一直跑会不会坏」**。两者关心的东西不重叠：
+
+- 成功率在这里**不是指标**。任务失败无所谓，进程崩了才是问题。
+- 记的是**内存、句柄、线程、异常**，以及它们随时间的走向。
+
+## 为什么要单独测
+
+M2 的每一批评测都在 20 分钟以内，而且中间人一直看着。M5 的 60 轮正式
+评测是无人值守的长跑，那时候才发现 dxcam 的帧缓冲没释放、UIA 的 COM
+对象越积越多、或者某个异常会让整批停在第 17 轮 —— 代价是重跑几小时。
+
+**长跑暴露的问题和短跑不是同一类。** 短跑测正确性，长跑测资源与容错。
+
+## 泄漏怎么判
+
+不看绝对值，看**趋势**：把整段时间的 RSS 采样做一次最小二乘拟合，
+斜率（MB/分钟）显著为正才算可疑。绝对值没有意义 —— PaddleOCR 一加载
+就是几百 MB，那不是泄漏。
+
+## 单轮失败不中断
+
+长跑脚本自己因为一个异常停下来，等于没测。所有异常记录下来继续跑，
+最后按类型汇总。**「跑完 30 分钟且异常可归类」比「零异常」更重要** ——
+零异常也可能只是没跑够久。
+
+## 用法
+
+    python scripts/stability_run.py                      # 演练，不碰键鼠
+    python scripts/stability_run.py --execute            # 实机跑 30 分钟
+    python scripts/stability_run.py --execute --minutes 45
+    python scripts/stability_run.py --execute --only close_app   # 只用最短的任务
+
+**实机跑期间手离开键鼠。** 急停 Ctrl+Alt+Q。
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import json
+import subprocess
+import sys
+import time
+import traceback
+from collections import Counter
+from dataclasses import asdict, dataclass, field
+from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+TASK_FILE = Path("tasks/basic_tasks.yaml")
+REPORT = Path("docs/m2-stability-report.md")
+RAW = Path("docs/m2-stability-raw.json")
+
+#: 采样间隔。30 分钟约 60 个点，够拟合趋势又不至于把日志撑爆。
+SAMPLE_EVERY_S = 30.0
+
+
+@dataclass
+class Sample:
+    """一次资源采样。"""
+
+    elapsed_s: float
+    rss_mb: float
+    threads: int
+    handles: int
+    rounds_done: int
+
+
+@dataclass
+class RoundRecord:
+    index: int
+    task: str
+    elapsed_s: float
+    duration_s: float
+    steps: int
+    status: str = ""
+    error: str = ""
+
+
+@dataclass
+class Report:
+    started_at: str = ""
+    minutes: float = 0.0
+    executed: bool = False
+    rounds: list = field(default_factory=list)
+    samples: list = field(default_factory=list)
+    errors: dict = field(default_factory=dict)
+    rss_slope_mb_per_min: float = 0.0
+    crashed: bool = False
+
+
+def _console() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
+def _sample(process, started: float, rounds: int) -> Sample:
+    """采一次资源。取不到的字段填 0，不让采样本身成为崩溃源。"""
+    rss = threads = handles = 0
+    try:
+        rss = process.memory_info().rss / (1024 * 1024)
+        threads = process.num_threads()
+        handles = getattr(process, "num_handles", lambda: 0)()
+    except Exception:  # noqa: BLE001
+        pass
+    return Sample(
+        elapsed_s=round(time.perf_counter() - started, 1),
+        rss_mb=round(rss, 1),
+        threads=threads,
+        handles=handles,
+        rounds_done=rounds,
+    )
+
+
+def _slope(samples: list[Sample]) -> float:
+    """RSS 对时间的最小二乘斜率，单位 MB/分钟。
+
+    **看趋势不看绝对值。** PaddleOCR 一加载就是几百 MB，那不是泄漏；
+    每分钟稳定涨几 MB 才是。
+    """
+    points = [(s.elapsed_s / 60.0, s.rss_mb) for s in samples if s.rss_mb > 0]
+    n = len(points)
+    if n < 3:
+        return 0.0
+    mean_x = sum(x for x, _ in points) / n
+    mean_y = sum(y for _, y in points) / n
+    denominator = sum((x - mean_x) ** 2 for x, _ in points)
+    if denominator == 0:
+        return 0.0
+    numerator = sum((x - mean_x) * (y - mean_y) for x, y in points)
+    return round(numerator / denominator, 3)
+
+
+def run_reset(commands: list[str], dry_run: bool) -> None:
+    for command in commands or []:
+        if dry_run:
+            continue
+        # reset 卡住不该拖垮长跑：超时就当这条没执行，继续下一条
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+            )
+    if not dry_run and commands:
+        time.sleep(1.0)
+
+
+def main() -> int:  # noqa: PLR0915 —— 长跑脚本，线性叙事比拆函数好读
+    _console()
+    parser = argparse.ArgumentParser(description="连续跑 N 分钟的稳定性测试（M2 验收 10）")
+    parser.add_argument("--execute", action="store_true", help="真正操作键鼠（默认演练）")
+    parser.add_argument("--minutes", type=float, default=30.0, help="跑多少分钟")
+    parser.add_argument("--only", default="", help="只用某个任务，可减少环境扰动")
+    parser.add_argument("--tasks", default=str(TASK_FILE))
+    parser.add_argument("--provider", default="dashscope")
+    parser.add_argument("--max-steps", type=int, default=6, help="每子任务步数上限，长跑取小值")
+    args = parser.parse_args()
+
+    import psutil
+    import yaml
+
+    from agent.session import Session, SessionConfig
+    from control.executor import ActionExecutor
+    from core.loop import LoopConfig
+    from grounding.native import NativeGrounding
+    from llm.openai_compat import OpenAICompatBackend
+    from llm.providers import load_dotenv_if_present, resolve
+    from perception.capture import ScreenCapturer
+    from perception.coordinate import CoordinateScaler
+
+    spec = yaml.safe_load(Path(args.tasks).read_text(encoding="utf-8"))
+    tasks = spec["tasks"]
+    if args.only:
+        tasks = [t for t in tasks if t["name"] == args.only]
+        if not tasks:
+            raise SystemExit(f"任务清单里没有 {args.only!r}")
+
+    load_dotenv_if_present()
+    config = resolve(args.provider)
+
+    print("=" * 74)
+    print("稳定性测试")
+    print("=" * 74)
+    print(f"  时长      {args.minutes} 分钟")
+    print(f"  任务      {'、'.join(t['name'] for t in tasks)}（轮流跑）")
+    print(f"  模型      {config.model}")
+    print(f"  模式      {'**实机执行**' if args.execute else '演练（不碰键鼠）'}")
+    print("\n  **成功率在这里不是指标。** 关心的是崩没崩、有没有泄漏。")
+    if args.execute:
+        print("  执行期间请勿操作鼠标键盘。急停 Ctrl+Alt+Q。")
+        if input("\n  确认开始？(yes/N) ").strip().lower() not in ("yes", "y"):
+            print("  已取消")
+            return 1
+    print()
+
+    report = Report(
+        started_at=datetime.now().isoformat(timespec="seconds"),
+        minutes=args.minutes,
+        executed=bool(args.execute),
+    )
+
+    process = psutil.Process()
+    capturer = ScreenCapturer()
+    probe = capturer.capture(fresh=True)
+    scaler = CoordinateScaler(probe.region)
+    space = SessionConfig().coordinate_space
+    scaler.register("planner", *space)
+    executor = ActionExecutor(scaler, space_name="planner", dry_run=not args.execute)
+
+    started = time.perf_counter()
+    deadline = started + args.minutes * 60
+    next_sample = started
+    errors: Counter = Counter()
+    index = 0
+
+    report.samples.append(asdict(_sample(process, started, 0)))
+
+    try:
+        while time.perf_counter() < deadline:
+            task = tasks[index % len(tasks)]
+            index += 1
+            elapsed = time.perf_counter() - started
+            record = RoundRecord(
+                index=index,
+                task=task["name"],
+                elapsed_s=round(elapsed, 1),
+                duration_s=0.0,
+                steps=0,
+            )
+
+            run_reset(task.get("reset"), dry_run=not args.execute)
+
+            round_started = time.perf_counter()
+            try:
+                backend = OpenAICompatBackend(config)
+                session = Session(
+                    backend,
+                    NativeGrounding(*space),
+                    executor,
+                    capturer,
+                    config=SessionConfig(loop=LoopConfig(max_iterations=args.max_steps)),
+                )
+                result = session.run(task["instruction"])
+                record.status = result.status
+                record.steps = result.total_steps
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:  # noqa: BLE001 —— 长跑不能被单轮异常终止
+                # 记录类型与首行即可。完整栈进 stderr，不塞进报告
+                record.error = f"{type(exc).__name__}: {exc}"[:200]
+                record.status = "exception"
+                errors[type(exc).__name__] += 1
+                traceback.print_exc(file=sys.stderr)
+
+            record.duration_s = round(time.perf_counter() - round_started, 1)
+            report.rounds.append(asdict(record))
+
+            mark = "!" if record.error else "."
+            print(
+                f"  [{record.elapsed_s / 60:5.1f}min] #{index:<3} {task['name']:<16}"
+                f" {record.status:<18} {record.steps:>2}步 {record.duration_s:>6.1f}s {mark}"
+            )
+
+            now = time.perf_counter()
+            if now >= next_sample:
+                sample = _sample(process, started, index)
+                report.samples.append(asdict(sample))
+                next_sample = now + SAMPLE_EVERY_S
+                print(
+                    f"           采样 RSS {sample.rss_mb:.0f}MB"
+                    f"  线程 {sample.threads}  句柄 {sample.handles}"
+                )
+    except KeyboardInterrupt:
+        print("\n  被中断（Ctrl+C）。已跑的数据仍会写出。")
+    except BaseException:  # noqa: BLE001 —— 连这里都挂了就是真的崩了
+        report.crashed = True
+        traceback.print_exc(file=sys.stderr)
+
+    report.samples.append(asdict(_sample(process, started, index)))
+    report.errors = dict(errors)
+    samples = [Sample(**s) for s in report.samples]
+    report.rss_slope_mb_per_min = _slope(samples)
+
+    render(report, samples)
+    return 1 if report.crashed else 0
+
+
+def render(report: Report, samples: list[Sample]) -> None:
+    total_min = samples[-1].elapsed_s / 60 if samples else 0.0
+    rounds = report.rounds
+    failed = [r for r in rounds if r["error"]]
+    rss = [s.rss_mb for s in samples if s.rss_mb > 0]
+
+    print()
+    print("=" * 74)
+    print("稳定性结果")
+    print("=" * 74)
+    print(f"  实际跑了   {total_min:.1f} 分钟 / {len(rounds)} 轮")
+    print(f"  进程崩溃   {'**是**' if report.crashed else '否'}")
+    print(f"  异常轮次   {len(failed)}/{len(rounds)}")
+    if report.errors:
+        for name, count in report.errors.items():
+            print(f"     {name}: {count} 次")
+    if rss:
+        print(f"  RSS        起 {rss[0]:.0f}MB → 止 {rss[-1]:.0f}MB，峰值 {max(rss):.0f}MB")
+        print(f"  RSS 斜率   {report.rss_slope_mb_per_min:+.2f} MB/分钟")
+        # 阈值是经验值：30 分钟涨 30MB 以内当作正常波动
+        if report.rss_slope_mb_per_min > 1.0:
+            print("     **可疑：内存持续上涨，按此速率长跑会有问题。**")
+        else:
+            print("     未见持续上涨。")
+    if samples:
+        print(f"  线程       {samples[0].threads} → {samples[-1].threads}")
+        if samples[-1].handles:
+            print(f"  句柄       {samples[0].handles} → {samples[-1].handles}")
+
+    RAW.parent.mkdir(parents=True, exist_ok=True)
+    RAW.write_text(json.dumps(asdict(report), ensure_ascii=False, indent=2), encoding="utf-8")
+
+    lines = [
+        "# M2 稳定性测试报告",
+        "",
+        f"> 由 `python scripts/stability_run.py` 生成，{report.started_at}。",
+        "> 对应 M2 验收标准 10。**本文件是生成物，改它没有意义，改脚本。**",
+        "",
+        "## 结论",
+        "",
+        f"- 连续运行 **{total_min:.1f} 分钟**，完成 **{len(rounds)}** 轮",
+        f"- 进程崩溃：**{'是' if report.crashed else '否'}**",
+        f"- 异常轮次：**{len(failed)}/{len(rounds)}**",
+    ]
+    if rss:
+        lines += [
+            f"- RSS：起 {rss[0]:.0f}MB → 止 {rss[-1]:.0f}MB，峰值 {max(rss):.0f}MB",
+            f"- RSS 斜率：**{report.rss_slope_mb_per_min:+.2f} MB/分钟**"
+            + ("（可疑）" if report.rss_slope_mb_per_min > 1.0 else "（未见持续上涨）"),
+        ]
+    lines += [
+        "",
+        "**成功率在本测试中不是指标。** 任务失败不影响结论，进程崩溃、",
+        "资源持续上涨、异常无法归类才是。",
+        "",
+    ]
+    if report.errors:
+        lines += ["## 异常分类", "", "| 类型 | 次数 |", "|---|---:|"]
+        lines += [f"| `{k}` | {v} |" for k, v in report.errors.items()]
+        lines += [""]
+    lines += [
+        "## 资源采样",
+        "",
+        "| 时间(min) | RSS(MB) | 线程 | 句柄 | 已完成轮次 |",
+        "|---:|---:|---:|---:|---:|",
+    ]
+    lines += [
+        f"| {s.elapsed_s / 60:.1f} | {s.rss_mb:.0f} | {s.threads} | {s.handles} | {s.rounds_done} |"
+        for s in samples
+    ]
+    lines += ["", f"原始数据：`{RAW}`", ""]
+
+    REPORT.write_text("\n".join(lines), encoding="utf-8")
+    print(f"\n  报告 {REPORT}")
+    print(f"  原始 {RAW}")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
