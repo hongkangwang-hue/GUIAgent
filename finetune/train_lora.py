@@ -5,7 +5,9 @@
 1. **链路能跑通**：Transformers 加载 + bitsandbytes 4-bit 量化 + PEFT LoRA
    + Accelerate 训练循环，完整走一遍。这本身就是大纲「掌握模型微调核心
    算法能力」的落点。
-2. **微调有没有效**：档 1（零样本）vs 档 2（LoRA）在 ScreenSpot 上的差值。
+2. **微调有没有效**：微调前 vs 微调后在 ScreenAgent 验证集上的差值
+   （动作类型准确率 + 坐标误差），对应大纲 W5「对比微调前后模型在
+   GUI 任务理解与动作生成上的效果」。
 
 **「微调无显著提升」是一个合法结论**（M3 降级路径 2），只要训练过程
 可复现、超参记录完整。实测训练集只有 569 条，远低于大纲定的 3000-4000，
@@ -127,14 +129,35 @@ def load_jsonl(path: Path) -> list[dict]:
     return rows
 
 
+#: 训练用的系统提示词。**与 `prompts/executor_v1.yaml` 的动作规范同构。**
+#:
+#: 训练时不给动作空间、推理时给一大段动作说明，模型见到的分布就是两回事。
+#: 这里不照抄 executor_v1 的全文（那份还带 few-shot 与子任务约定，对单步
+#: 动作生成是噪声），只保留决定输出格式的那部分：动作名与 JSON 结构。
+#:
+#: 坐标空间与 `finetune.dataset.COORD_SPACE` 一致，不在提示词里另写一套。
+SYSTEM_PROMPT = """你是一个桌面 GUI 智能体。你会看到一张屏幕截图和一个任务目标，
+需要判断为完成该任务，下一步应当执行什么动作。
+
+可用动作：left_click / double_click / right_click / mouse_move
+
+只输出一个 JSON 对象，不要任何解释文字：
+
+{"action": "动作名", "x": 横坐标, "y": 纵坐标}
+
+坐标按 1000×1000 的范围给出，原点在左上角。"""
+
+
 def build_messages(record: dict) -> list[dict]:
     """一条样本的对话形式。
 
     **与推理时的构造保持同构。** 训练时如果把图片放在 user 消息里、
-    推理时放在 system 里，模型见到的分布就不是一回事，而这种错误
-    在 loss 曲线上完全看不出来。
+    推理时放在 system 里，或者训练时不给动作空间而推理时给，模型见到的
+    分布就不是一回事——**而这种错误在 loss 曲线上完全看不出来**，
+    只会让评测分数莫名其妙地低。
     """
     return [
+        {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
         {
             "role": "user",
             "content": [

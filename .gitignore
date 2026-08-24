@@ -50,3 +50,9 @@ venv/
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# 微调数据是生成物：`python -m finetune.dataset` 一条命令重建，
+# 且内容依赖 data/raw 里的原始数据集与截图路径。meta.json 例外——
+# 它记着划分指纹与动作分布，是报告要引的证据。
+finetune/data/*.jsonl
+finetune/outputs/

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import types
 
-from finetune.dataset import COORD_SPACE, build_record, describe, normalize_point
+from finetune.dataset import COORD_SPACE, build_record, executable_action, normalize_point, task_of
 from grounding.local_vlm import MODEL_SPACE, parse_point
 from perception.types import BBox, Point
 
@@ -21,15 +21,26 @@ from perception.types import BBox, Point
 _CENTER = Point(960, 540)
 
 
+class _Kind:
+    """假的 ActionType 枚举成员，只需要 `.value`。"""
+
+    def __init__(self, value: str) -> None:
+        self.value = value
+
+
 def _sample(
     sample_id="s1",
-    instruction="点击左上角的文件菜单",
+    instruction="在互联网上查找冯·诺依曼的相关信息",
     resolution=(1920, 1080),
     point=_CENTER,
     bbox=None,
     meta=None,
+    action_type="click",
+    subtype="click",
 ):
     """造一个够用的假样本。不 import UnifiedSample 是为了不牵扯整条数据链。"""
+    base = {"raw_action_subtype": subtype} if subtype else {}
+    base.update(meta or {})
     return types.SimpleNamespace(
         sample_id=sample_id,
         instruction=instruction,
@@ -38,7 +49,8 @@ def _sample(
         bbox=bbox,
         screenshot_path="/tmp/x.png",
         source_dataset="screenagent",
-        meta=meta or {},
+        action_type=_Kind(action_type),
+        meta=base,
     )
 
 
@@ -83,16 +95,35 @@ class TestNormalizePoint:
             normalize_point(1, 1, (0, 100))
 
 
-class TestDescribe:
-    def test_优先用指令文本(self):
-        assert describe(_sample(instruction="点击保存按钮")) == "点击保存按钮"
+class TestTaskOf:
+    def test_取任务目标(self):
+        assert task_of(_sample(instruction="插入一个圆形")) == "插入一个圆形"
 
-    def test_指令为空时退回元素类型(self):
-        sample = _sample(instruction="", meta={"element_kind": "icon"})
-        assert describe(sample) == "icon"
+    def test_空任务返回空(self):
+        assert task_of(_sample(instruction="   ")) == ""
 
-    def test_都没有时返回空(self):
-        assert describe(_sample(instruction="", meta={})) == ""
+
+class TestExecutableAction:
+    def test_原始子类型优先(self):
+        """`raw_action_subtype` 比统一 schema 的 `action_type` 更细。
+
+        后者把 `move` 归进了 `other`，只看它会丢掉 74 条 mouse_move 样本。
+        """
+        sample = _sample(action_type="other", subtype="move")
+        assert executable_action(sample) == "mouse_move"
+
+    def test_常见映射(self):
+        assert executable_action(_sample(subtype="click")) == "left_click"
+        assert executable_action(_sample(subtype="double_click")) == "double_click"
+
+    def test_不可执行的动作返回空(self):
+        """拖拽只有起点没有终点，down/up 是半个动作。
+
+        **丢弃而不是硬凑**——拿只有起点的拖拽去训练，
+        教出来的是「拖拽 = 点一下」。
+        """
+        assert executable_action(_sample(action_type="drag", subtype="drag")) == ""
+        assert executable_action(_sample(action_type="other", subtype="down")) == ""
 
 
 class TestBuildRecord:
@@ -101,8 +132,20 @@ class TestBuildRecord:
         assert record is not None
         assert record["point_norm"] == [500, 500]
         assert record["point_px"] == [960, 540]
-        assert "文件菜单" in record["instruction"]
-        assert record["answer"] == '{"x": 500, "y": 500}'
+        # 任务目标原样进指令，不再包装成「找到：xxx」
+        assert record["instruction"] == "在互联网上查找冯·诺依曼的相关信息"
+
+    def test_输出格式与推理时一致(self):
+        """answer 必须能被 `ActionIntent` 的解析路径直接读懂。
+
+        训练时输出一种格式、推理时要求另一种，模型就得学两套 ——
+        而这种不一致在 loss 曲线上完全看不出来。
+        """
+        import json
+
+        record = build_record(_sample())
+        payload = json.loads(record["answer"])
+        assert payload == {"action": "left_click", "x": 500, "y": 500}
 
     def test_没有_point_时用_bbox_中心(self):
         sample = _sample(point=None, bbox=BBox(100, 100, 300, 300))
@@ -111,14 +154,12 @@ class TestBuildRecord:
         assert record["point_px"] == [200, 200]
         assert record["bbox_px"] == [100, 100, 300, 300]
 
-    def test_描述为空的样本丢掉(self):
-        """**不填占位符。**
+    def test_任务为空的样本丢掉(self):
+        """**不填占位符。** 没有任务目标的样本会教模型在缺信息时也硬输出动作。"""
+        assert build_record(_sample(instruction="")) is None
 
-        「找到：」后面什么都没有的训练样本，会教模型在缺信息时也硬猜
-        坐标 —— 而那正是 M2 实测里最麻烦的行为之一（凭空断言屏幕上有
-        不存在的元素）。宁可少 569 条里的几条。
-        """
-        assert build_record(_sample(instruction="", meta={})) is None
+    def test_不可执行的动作丢掉(self):
+        assert build_record(_sample(action_type="drag", subtype="drag")) is None
 
     def test_既无_point_也无_bbox_丢掉(self):
         assert build_record(_sample(point=None, bbox=None)) is None

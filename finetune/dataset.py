@@ -1,42 +1,61 @@
-"""把统一 schema 的样本转成 grounding 训练格式 —— M3 任务 1。
+"""把统一 schema 的样本转成**动作生成**训练格式 —— 对应大纲 W5。
 
-## 训练什么
+## 训练目标是「动作生成」，不是「元素定位」
 
-一条样本是「截图 + 元素描述 → 坐标点」。模型学的是**在给定界面里
-找到被描述的元素**，不是学怎么规划任务。目标单一，指标单一
-（ScreenSpot 命中率），结论才干净。
+大纲 W5 任务 3 的原文：
 
-## 坐标写成什么
+> 对比微调前后模型在 **GUI 任务理解与动作生成** 上的效果
 
-**归一化到 [0,1000) 的整数**，与 `SessionConfig.coordinate_space` 一致。
+一条样本是「截图 + 任务目标 → 下一个动作（类型 + 坐标）」。
 
-这不是随便定的：`qwen3-vl` 的原生输出就是这个空间，实测过——同一张
-2560×1600 截图分别告诉模型画布是 1024×768 和 1024×640，y 值都恒在 968
-上下不随声明变化，968/1000 正是任务栏在 1600 高屏幕上的位置。
+### 曾经走错过一次，记在这里
 
-**训练时用与推理时不同的坐标空间，是最容易犯又最难查的错**：loss 会
-正常下降，评测分数却莫名其妙地低，因为模型学的坐标系和评测换算用的
-不是一个。所以这个值在 `COORD_SPACE` 里写死并被单测钉住。
+第一版按 grounding（元素描述 → 坐标）来构建，结果生成出这样的样本：
 
-## 为什么写 JSONL 而不是直接喂 Dataset
+    在这张界面截图中找到：Find relevant information about von Neumann
+    on the Internet。返回它的中心坐标。
 
-三个理由：
+「在互联网上查找冯·诺依曼的相关信息」是**任务目标**，不是元素描述——
+让模型「找到这个」无从找起。569 条样本只有 135 个不重复描述，
+「Insert a circle」出现 17 次对应 17 个不同坐标，**对 grounding 是矛盾监督**。
 
-1. **可检查。** 转换错了要能一眼看出来——JSONL 可以直接 `head`。
-2. **可复现。** 训练脚本读的是文件，不是内存里的对象，重跑必然一致。
-3. **切断依赖。** 训练在租来的 GPU 上跑，那台机器不需要装 `data/` 那一整套
-   （opencv、paddleocr 等），只要能读 JSONL 和图片。
+根因不是数据不好，是**我们把目标窄化错了**。ScreenAgent 提供的
+（截图 + 任务 + 动作）三元组，正是大纲要的「动作生成」；
+是我们改成 grounding 之后，数据才变得不匹配。改回大纲口径，数据立刻够用。
 
-## 冻结划分必须先核指纹
+> 教训：**数据与指标不匹配时，先怀疑指标是不是自己改的**，
+> 而不是先去找更多数据。
 
-`FrozenSplit.read()` 会按内容重算指纹并与文件里记的比对，不符即拒绝载入。
-**条数一样但内容不同的划分是完全可能出现的**（换个种子就是），
-只看条数的核对等于没核。
+## 输出格式与推理时完全一致
+
+    {"action": "left_click", "x": 500, "y": 251}
+
+这正是 `ActionIntent` 解析的格式，也是 `executor_v1` 提示词要求模型输出的
+格式。**训练与推理同构**，模型不必学两套。
+
+## 坐标归一化到 [0,1000)
+
+与 `SessionConfig.coordinate_space` 一致。实测 `qwen3-vl` 的原生输出就是
+这个空间。训练与推理坐标系不一致时 loss 会正常下降而评测分数莫名其妙地低，
+所以 `COORD_SPACE` 写死并被单测钉住。
+
+## 只保留能执行的动作
+
+ScreenAgent 的 934 条带坐标样本全是鼠标动作：
+
+| 原始 | 条数 | 映射为 | 处理 |
+|---|---:|---|---|
+| click | 709 | `left_click` | 保留 |
+| double_click | 105 | `double_click` | 保留 |
+| move | 83 | `mouse_move` | 保留 |
+| drag | 31 | — | **丢弃**：只有起点没有终点，构不成可执行的拖拽 |
+| down / up | 6 | — | 丢弃：半个动作 |
+
+**丢弃而不是硬凑。** 拿一个只有起点的拖拽去训练，教出来的是「拖拽=点一下」。
 
 ## 用法
 
     python -m finetune.dataset                    # 用默认冻结划分
-    python -m finetune.dataset --out finetune/data
     python -m finetune.dataset --check            # 只核对，不生成
 """
 
@@ -60,10 +79,24 @@ OUT_DIR = Path("finetune/data")
 #: **训练坐标空间，与推理时必须一致。** 见模块 docstring。
 COORD_SPACE = (1000, 1000)
 
-#: 训练用的提示词。**与 `eval/grounding.py` 的评测提示词保持同构**——
-#: 训练时说「找到并返回坐标」，评测时也这么说，模型才不用跨越
-#: 提示词分布的鸿沟。措辞不必逐字相同，但任务表述必须是同一件事。
-INSTRUCTION_TEMPLATE = "在这张界面截图中找到：{description}。返回它的中心坐标。"
+#: 统一 schema 的动作类型 → 可执行动作名（`control.actions.ActionType`）。
+#: 不在表里的一律丢弃，见 docstring 的「只保留能执行的动作」。
+ACTION_MAP = {
+    "click": "left_click",
+    "double_click": "double_click",
+    "right_click": "right_click",
+    "move": "mouse_move",
+    "mouse_move": "mouse_move",
+}
+
+#: 原始子类型 → 可执行动作名。`raw_action_subtype` 比统一 schema 的
+#: `action_type` 更细（后者把 move 归进了 `other`），优先用它。
+RAW_SUBTYPE_MAP = {
+    "click": "left_click",
+    "double_click": "double_click",
+    "right_click": "right_click",
+    "move": "mouse_move",
+}
 
 
 def normalize_point(x: int, y: int, size: tuple[int, int]) -> tuple[int, int]:
@@ -81,27 +114,33 @@ def normalize_point(x: int, y: int, size: tuple[int, int]) -> tuple[int, int]:
     return max(nx, 0), max(ny, 0)
 
 
-def describe(sample) -> str:
-    """从样本里取出「元素描述」。
+def executable_action(sample) -> str:
+    """样本对应哪个可执行动作。不可执行返回空串。"""
+    subtype = str((sample.meta or {}).get("raw_action_subtype", "")).strip().lower()
+    if subtype in RAW_SUBTYPE_MAP:
+        return RAW_SUBTYPE_MAP[subtype]
+    return ACTION_MAP.get(getattr(sample.action_type, "value", ""), "")
 
-    优先级：指令文本 > 元素类型 > 空。ScreenAgent 的指令本身就是
-    「点击左上角的文件菜单」这类自然语言，去掉动作词后正是元素描述。
 
-    **描述为空的样本要丢掉而不是填占位符。** 「找到：」后面什么都没有
-    的训练样本会教模型在缺信息时也硬猜坐标——那正是 M2 实测里最麻烦的
-    行为之一。
+def task_of(sample) -> str:
+    """这条样本的任务目标。
+
+    ScreenAgent 的 `instruction` 就是会话级的任务描述
+    （`instruction_source` 恒为 `task_prompt`，实测 400/400）。
+    **空的样本丢掉而不是填占位符**——没有任务目标的样本会教模型
+    在缺信息时也硬输出一个动作。
     """
-    text = (sample.instruction or "").strip()
-    if text:
-        return text
-    kind = str(sample.meta.get("element_kind", "")).strip()
-    return kind
+    return (sample.instruction or "").strip()
 
 
 def build_record(sample) -> dict | None:
-    """一条训练样本。缺关键字段时返回 None（调用方计数丢弃原因）。"""
-    description = describe(sample)
-    if not description:
+    """一条动作生成样本。缺关键字段或动作不可执行时返回 None。"""
+    task = task_of(sample)
+    if not task:
+        return None
+
+    action = executable_action(sample)
+    if not action:
         return None
 
     point = sample.point
@@ -118,11 +157,15 @@ def build_record(sample) -> dict | None:
         "sample_id": sample.sample_id,
         "image": str(sample.screenshot_path),
         "resolution": list(sample.resolution),
-        "instruction": INSTRUCTION_TEMPLATE.format(description=description),
-        # 输出格式与推理时的解析路径一致，模型不必学两套
-        "answer": json.dumps({"x": nx, "y": ny}, ensure_ascii=False),
+        # 任务目标原样进提示词。训练时的问法与 executor 提示词一致
+        "instruction": task,
+        # 与 ActionIntent 的解析格式完全一致，模型不必学两套
+        "answer": json.dumps({"action": action, "x": nx, "y": ny}, ensure_ascii=False),
+        "action": action,
         "point_norm": [nx, ny],
         "point_px": [point.x, point.y],
+        "session_id": str((sample.meta or {}).get("session_id", "")),
+        "action_index": (sample.meta or {}).get("action_index"),
         "source": sample.source_dataset,
     }
     if sample.bbox is not None:
@@ -166,7 +209,7 @@ def convert(
     wanted = {"train": set(split.train_ids), "val": set(split.val_ids)}
     buckets: dict[str, list] = {"train": [], "val": []}
     dropped: Counter = Counter()
-    seen = 0
+    actions: Counter = Counter()
 
     for sample in loader.load():
         target = None
@@ -176,14 +219,15 @@ def convert(
                 break
         if target is None:
             continue
-        seen += 1
         record = build_record(sample)
         if record is None:
             dropped[target] += 1
             continue
+        actions[record["action"]] += 1
         buckets[target].append(record)
 
     stats = {
+        "objective": "action_generation",
         "split_file": str(split_file),
         "fingerprint": split.fingerprint(),
         "seed": split.seed,
@@ -191,7 +235,7 @@ def convert(
         "expected": {"train": split.train_size, "val": split.val_size},
         "built": {k: len(v) for k, v in buckets.items()},
         "dropped": dict(dropped),
-        "matched_in_dataset": seen,
+        "action_dist": dict(actions),
         "coord_space": list(COORD_SPACE),
     }
 
@@ -217,7 +261,7 @@ def main() -> int:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
 
-    parser = argparse.ArgumentParser(description="生成 grounding 微调数据（M3 任务 1）")
+    parser = argparse.ArgumentParser(description="生成动作生成微调数据（大纲 W5）")
     parser.add_argument("--split", default=str(SPLIT_FILE))
     parser.add_argument("--out", default=str(OUT_DIR))
     parser.add_argument("--dataset", default="screenagent")
@@ -232,8 +276,9 @@ def main() -> int:
     )
 
     print("=" * 70)
-    print("grounding 微调数据构建")
+    print("动作生成微调数据构建")
     print("=" * 70)
+    print("  目标      动作生成（截图 + 任务 → 动作类型 + 坐标），对应大纲 W5")
     print(f"  划分文件  {stats['split_file']}")
     print(f"  指纹      {stats['fingerprint']}    种子 {stats['seed']}")
     print(f"  划分单位  {stats['group_by']}")
@@ -245,15 +290,18 @@ def main() -> int:
         drop = stats["dropped"].get(name, 0)
         mark = "" if built + drop == expected else "  **与划分条数不符**"
         print(f"  {name:<6}期望 {expected:>4}    生成 {built:>4}    丢弃 {drop:>3}{mark}")
-    if stats["dropped"]:
-        print("\n  丢弃原因：描述为空或缺坐标。**不填占位符**——「找到：」后面")
-        print("  什么都没有的样本会教模型在缺信息时硬猜坐标。")
 
-    total = stats["built"]["train"]
-    if total < 1000:
-        print(f"\n  **训练集只有 {total} 条**，大纲定的是 3000-4000。")
-        print("  这是已知的既成事实（M2 前置件①实测），补充来源方案见")
-        print("  docs/m3-prereq/README.md，须在 M3 开工前定案。")
+    if stats["action_dist"]:
+        print("\n  动作分布：")
+        total = sum(stats["action_dist"].values())
+        for name, count in sorted(stats["action_dist"].items(), key=lambda kv: -kv[1]):
+            print(f"    {name:<16}{count:>5}  {count / total:>6.1%}")
+        print("\n  **类别极不均衡是可预期的**——真实 GUI 轨迹里点击本来就占绝大多数。")
+        print("  报告里要按动作类型分别给准确率，只报总体会被 click 一类主导。")
+
+    if stats["dropped"]:
+        print("\n  丢弃的是拖拽（只有起点没有终点）与半个动作（down/up）。")
+        print("  **丢弃而不是硬凑**：拿只有起点的拖拽去训练，教出来的是「拖拽=点一下」。")
 
     if not args.check:
         print(f"\n  已写入 {args.out}/train.jsonl、val.jsonl、meta.json")
