@@ -91,8 +91,23 @@ def wire(backend, content, usage=None, metadata=None, error=None) -> FakeClient:
 # ===================================================================== #
 
 
-def test_three_providers_registered() -> None:
-    assert set(PROVIDERS) == {"dashscope", "zhipu", "nvidia"}
+def test_providers_registered() -> None:
+    """三家云平台 + 一条自建服务。
+
+    `selfhost` 是离线版的接入点：权重跑在宿主机 GPU 上，客机经 HTTP 调用。
+    它与三家云平台共用同一个 `OpenAICompatBackend`——这正是当初把后端写成
+    通用兼容层换来的好处，加一条记录即可，后端类一行不改。
+    """
+    assert set(PROVIDERS) == {"dashscope", "zhipu", "nvidia", "selfhost"}
+
+
+def test_only_selfhost_has_local_weights() -> None:
+    """`weights_local` 是给自建服务开的口子，不能顺手把「不猜单价」废掉。
+
+    商业平台未配单价时必须继续是「未知」（priced=False），否则成本恒为 0
+    却看起来像真的——这正是 llm/providers.py 开头要避免的那种数字。
+    """
+    assert {k for k, p in PROVIDERS.items() if p.weights_local} == {"selfhost"}
 
 
 def test_resolve_reads_env(monkeypatch) -> None:
@@ -517,11 +532,23 @@ def test_history_without_images_is_still_summarized(backend) -> None:
     assert any("越界" in str(m.content) for m in messages)
 
 
-def test_prompt_states_the_image_size(backend) -> None:
-    """告诉模型画布多大，它才知道坐标该落在什么范围。"""
+def test_prompt_states_the_coordinate_space(backend) -> None:
+    """告诉模型按哪把尺子作答——**是坐标系尺寸，不是图片尺寸**。
+
+    这条原来断言的是 image_size，把一个缺陷钉住了：系统提示用坐标系
+    尺寸渲染（「x ∈ [0, 1000)」），用户消息却用图片尺寸（「坐标按
+    1024×768 的范围给出」），同一次请求里两句话互相矛盾。矛盾的后果不是
+    报错，是模型按哪把尺子作答不确定——看起来像「模型定位不稳」。
+
+    见 `LLMBackend.coordinate_space`。
+    """
     messages = backend.build_messages("目标", _shot(), [])
     text = messages[-1].content[0]["text"]
-    assert f"{DEFAULT_IMAGE_SIZE[0]}×{DEFAULT_IMAGE_SIZE[1]}" in text
+    space = backend.coordinate_space
+    assert f"{space[0]}×{space[1]}" in text
+    # 图片尺寸恰好等于坐标系时这条断言会失去意义，先钉住两者确实不同
+    assert tuple(space) != tuple(DEFAULT_IMAGE_SIZE)
+    assert f"{DEFAULT_IMAGE_SIZE[0]}×{DEFAULT_IMAGE_SIZE[1]}" not in text
 
 
 def test_image_meta_is_exposed(backend) -> None:

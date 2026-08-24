@@ -108,6 +108,16 @@ def run_reset(commands: list[str], dry_run: bool) -> None:
         time.sleep(1.5)  # 给进程退出与窗口关闭留时间
 
 
+def _slug(text: str) -> str:
+    """把 `--tag` 变成能安全进文件名的东西。
+
+    只留字母数字、连字符、下划线。文件名里混进空格或冒号，后面用通配符
+    找文件、或者把路径贴进命令行时都会出岔子。
+    """
+    cleaned = "".join(c if c.isalnum() or c in "-_" else "-" for c in text.strip())
+    return cleaned.strip("-")[:40]
+
+
 def latency_breakdown(records: list) -> dict:
     """把每步的四段延迟汇总。M2 验收标准 3 要求按 API / grounding /
     执行 / 截图 分解。"""
@@ -120,13 +130,27 @@ def latency_breakdown(records: list) -> dict:
 
 def main() -> int:
     _console()
+
+    from llm.factory import add_backend_args, build_backend, describe, is_offline
+
     parser = argparse.ArgumentParser(description="M2 基础任务批量执行与成功率统计")
     parser.add_argument("--execute", action="store_true", help="真正操作键鼠（默认演练）")
     parser.add_argument("--repeats", type=int, default=5, help="每个任务跑几次")
     parser.add_argument("--only", default="", help="只跑某个任务（按 name）")
     parser.add_argument("--tasks", default=str(TASK_FILE))
-    parser.add_argument("--provider", default="dashscope")
     parser.add_argument("--max-steps", type=int, default=0, help="覆盖清单里的 max_steps")
+    parser.add_argument(
+        "--tag",
+        default="",
+        help="给这次跑起个名字，进存档文件名与 JSON。对比实验必填，例如 base / lora",
+    )
+    # 在线/离线由这组参数切换：
+    #   在线      --provider dashscope
+    #   离线-基座 --provider local
+    #   离线-微调 --provider local --adapter finetune/outputs/<run>/adapter
+    # **同一个脚本、同一套任务、同一套提示词**，否则跑出来的差值里
+    # 混进了脚本差异，就不是模型的差值了。
+    add_backend_args(parser)
     args = parser.parse_args()
 
     import yaml
@@ -136,8 +160,6 @@ def main() -> int:
     from core.loop import LoopConfig
     from core.verify import SuccessCheck
     from grounding.native import NativeGrounding
-    from llm.openai_compat import OpenAICompatBackend
-    from llm.providers import load_dotenv_if_present, resolve
     from perception.capture import ScreenCapturer
     from perception.coordinate import CoordinateScaler
 
@@ -148,8 +170,17 @@ def main() -> int:
         if not tasks:
             raise SystemExit(f"任务清单里没有 {args.only!r}")
 
-    load_dotenv_if_present()
-    config = resolve(args.provider)
+    # **后端跨轮复用，不是每轮新建。**
+    #
+    # 原来每轮 `OpenAICompatBackend(config)` 一个，从不 close()。每个后端
+    # 持有一个 ChatOpenAI，它持有 openai SDK 的 httpx 连接池 —— 稳定性测试
+    # 实测 22 分钟 16 轮之后句柄从 369 涨到 1521，单调不降。
+    #
+    # 成本要按轮统计，用 `reset_cost()` 而不是新建实例：前者是为这件事
+    # 准备的，后者顺带泄漏了一个连接池。本地后端更不能每轮新建——
+    # 每次都要重新把 2GB 权重搬进显存。
+    backend = build_backend(args)
+    offline = is_offline(backend)
 
     print("=" * 74)
     print("M2 基础任务批量执行")
@@ -157,7 +188,8 @@ def main() -> int:
     print(
         f"  任务数    {len(tasks)}    每个跑 {args.repeats} 次    共 {len(tasks) * args.repeats} 轮"
     )
-    print(f"  模型      {config.model}")
+    print(f"  后端      {describe(backend)}")
+    print(f"  数据边界  {'截图不出本机' if offline else '截图上传到平台服务器'}")
     print(f"  模式      {'**实机执行**（会真的操作键鼠）' if args.execute else '演练（不碰键鼠）'}")
     if args.execute:
         print("\n  急停：Ctrl+Alt+Q，或把鼠标甩到屏幕角落触发 FAILSAFE")
@@ -173,16 +205,6 @@ def main() -> int:
     space = SessionConfig().coordinate_space
     scaler.register("planner", *space)
     executor = ActionExecutor(scaler, space_name="planner", dry_run=not args.execute)
-
-    # **后端跨轮复用，不是每轮新建。**
-    #
-    # 原来每轮 `OpenAICompatBackend(config)` 一个，从不 close()。每个后端
-    # 持有一个 ChatOpenAI，它持有 openai SDK 的 httpx 连接池 —— 稳定性测试
-    # 实测 22 分钟 16 轮之后句柄从 369 涨到 1521，单调不降。
-    #
-    # 成本要按轮统计，用 `reset_cost()` 而不是新建实例：前者是为这件事
-    # 准备的，后者顺带泄漏了一个连接池。
-    backend = OpenAICompatBackend(config)
 
     records: list[RunRecord] = []
     for task in tasks:
@@ -285,12 +307,13 @@ def main() -> int:
             records.append(record)
         print()
 
+    label = describe(backend)
     backend.close()
-    render(records, args)
+    render(records, args, backend_label=label, offline=offline)
     return 0
 
 
-def render(records: list[RunRecord], args) -> None:
+def render(records: list[RunRecord], args, backend_label: str = "", offline: bool = False) -> None:
     from collections import defaultdict
 
     by_task: dict[str, list[RunRecord]] = defaultdict(list)
@@ -371,9 +394,15 @@ def render(records: list[RunRecord], args) -> None:
             print(f"    {r.title} 第{r.attempt}次：{r.exclusion_reason}")
 
     cost = sum(r.cost_cny for r in records)
-    print(f"\n  累计成本 {cost:.4f} 元（{len(records)} 轮）")
-    if records:
-        print(f"  单任务平均 {cost / len(records):.4f} 元")
+    if offline:
+        # 离线版的 API 费用**真的是 0**，不是「未知」。但这不等于没有成本，
+        # 成本转移到了硬件与耗时上——所以这里只说清是哪一种 0，不硬折算成钱。
+        print(f"\n  API 费用 0 元（本地推理，{len(records)} 轮）")
+        print("  离线版的开销体现在延迟与显存上，见上面的平均耗时。")
+    else:
+        print(f"\n  累计成本 {cost:.4f} 元（{len(records)} 轮）")
+        if records:
+            print(f"  单任务平均 {cost / len(records):.4f} 元")
 
     payload = json.dumps(
         {
@@ -381,21 +410,50 @@ def render(records: list[RunRecord], args) -> None:
             "executed": bool(args.execute),
             "repeats": args.repeats,
             "scope": args.only or "all",
+            # **后端必须进存档。** 在线与离线两份存档除了数字之外长得一模一样，
+            # 不记下来，隔几天就分不清哪份是哪份——而这两份正是对比报告的全部依据。
+            "backend": backend_label,
+            "offline": offline,
+            "tag": args.tag,
             "records": [asdict(r) for r in records],
         },
         ensure_ascii=False,
         indent=2,
     )
-    RAW.parent.mkdir(parents=True, exist_ok=True)
-    RAW.write_text(payload, encoding="utf-8")
+    # **只有「在线 + 全量 + 实机」这一种跑法才配写 M2 的交付物。**
+    #
+    # `RAW` 是 M2 验收报告引用的那份数据，说的是在线版 19/24。任何别的跑法
+    # 顺手把它写掉，报告里的数字和它引用的文件就对不上——**这不是假想**：
+    #
+    #   - M1 的 `verify_llm.py` 把一份两平台的报告覆盖成了 1/1
+    #   - 本脚本自己也犯过：`--only send_message --repeats 5` 跑完之后，
+    #     `RAW` 里只剩 4 条 send_message 记录，而报告仍写着 19/24。
+    #     两个数字都对，只是不再来自同一个文件。
+    #
+    # 存档目录里每一次跑都有独立文件，那才是所有跑法的落点。
+    skip_raw = offline or bool(args.only) or not args.execute
+    if skip_raw:
+        why = "离线运行" if offline else ("只跑了单个任务" if args.only else "演练模式")
+        print(f"  （{why}，未覆盖 {RAW}——那是在线全量实机跑的 M2 交付数据）")
+    else:
+        RAW.parent.mkdir(parents=True, exist_ok=True)
+        RAW.write_text(payload, encoding="utf-8")
 
     RUNS.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     scope = args.only or "all"
     mode = "exec" if args.execute else "dry"
-    archive = RUNS / f"{stamp}-{scope}-{mode}.json"
+    where = "offline" if offline else "online"
+    # **`--tag` 进文件名，省掉「跑完手动改名」这一步。**
+    #
+    # 离线-基座与离线-微调在客机侧的命令完全相同（区别在宿主机起的是哪个
+    # 服务），存档名于是也完全相同，只差时间戳。原来靠人跑完立刻改名区分
+    # ——而那是一步没有任何价值、却能毁掉一小时数据的手工操作。
+    suffix = f"-{_slug(args.tag)}" if args.tag else ""
+    archive = RUNS / f"{stamp}-{scope}-{mode}-{where}{suffix}.json"
     archive.write_text(payload, encoding="utf-8")
-    print(f"  原始数据 {RAW}")
+    if not skip_raw:
+        print(f"  原始数据 {RAW}")
     print(f"  存档     {archive}")
     if not args.execute:
         print("\n  [演练模式] 未真正执行，成功率无意义。加 --execute 实机跑。")

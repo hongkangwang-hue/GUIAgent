@@ -365,10 +365,12 @@ class LLMBackend(ABC):
     name: str = "base"
 
     #: 送模型的默认用户提示模板。``{instruction}`` 会被子任务目标替换，
-    #: ``{width}`` / ``{height}`` 被画布尺寸替换
+    #: ``{width}`` / ``{height}`` 被 **坐标系** 尺寸替换（不是图片尺寸，
+    #: 见 `coordinate_space`）。图片尺寸另有 ``{image_width}`` /
+    #: ``{image_height}`` 可用
     DEFAULT_USER_TEMPLATE = """当前子任务目标：{instruction}
 
-这是当前屏幕（{width}×{height}）。请判断下一步动作，坐标必须落在这张图的范围内。
+这是当前屏幕。请判断下一步动作，坐标按 {width}×{height} 的范围给出。
 若该子任务已完成，输出 {"done": true}。"""
 
     def __init__(self, model: str = "", price: PriceSheet | None = None) -> None:
@@ -389,6 +391,22 @@ class LLMBackend(ABC):
         self.system_prompt: str = ""
         self.few_shot: list[dict] = []
         self.user_template: str = self.DEFAULT_USER_TEMPLATE
+
+        #: **模型作答所用的坐标系尺寸**，用来渲染用户模板里的
+        #: ``{width}`` / ``{height}``。与送去的图片尺寸是两回事。
+        #:
+        #: 这个字段是补一个实测发现的缺陷。`agent.session._prepare_backend`
+        #: 一直用坐标系尺寸渲染**系统提示**（它的注释写着「提示词里说的
+        #: 尺寸必须是坐标系的尺寸」），却把 `image_size` 交给了**用户模板**。
+        #: 于是 M2 的每一次请求都同时告诉模型两个范围：
+        #:
+        #:     系统提示：坐标范围是 x ∈ [0, 1000)，y ∈ [0, 1000)
+        #:     用户消息：坐标按 1024×768 的范围给出
+        #:
+        #: 两句话矛盾，而矛盾的后果不是报错，是模型按哪把尺子作答不确定
+        #: ——看起来就像「模型定位不稳」。默认与 `SessionConfig.coordinate_space`
+        #: 一致；输出图像像素坐标的模型应改成与图片尺寸相同。
+        self.coordinate_space: tuple[int, int] = (1000, 1000)
 
     # ------------------------------------------------------------------ #
 

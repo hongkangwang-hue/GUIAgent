@@ -317,7 +317,7 @@ def test_label_warns_on_unknown_vocabulary(tmp_path) -> None:
 def test_label_skips_clean_trajectory(tmp_path) -> None:
     writer = _trajectory(tmp_path, [_step(step=1)])
     result = runner.invoke(app, ["label", writer.trajectory_id, "--root", str(tmp_path)])
-    assert "不需要打标" in result.output
+    assert "没有需要打标的步骤" in result.output
 
 
 def test_run_without_instruction_fails() -> None:

@@ -38,6 +38,16 @@ accelerate>=1.0.0
 peft>=0.14.0
 bitsandbytes>=0.45.0
 
+# --- 本地模型服务（离线版） ---
+# M0 定的拓扑：模型跑在宿主机 GPU 上，客机经 HTTP 调用 OpenAI 兼容端点
+# （客机没有 GPU 直通，而键鼠执行只能在客机内）。
+# 大纲技术栈点名 vLLM，但 **vLLM 在 Windows 上没有原生支持**，要装 WSL2 再做
+# GPU 直通。为一个并发恒为 1 的单客机场景引入 WSL 不划算，改用 FastAPI 包一层
+# scripts/serve_local_model.py —— 对客机暴露的是同一个协议，换回 vLLM 时客机无感知。
+# 只有跑离线版才需要，装在宿主机上即可。
+fastapi>=0.115.0
+uvicorn>=0.30.0
+
 # --- 数据与分析 ---
 datasets>=3.0.0
 pandas>=2.0.0

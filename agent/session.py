@@ -264,6 +264,11 @@ class Session:
         )
         self.backend.few_shot = self.executor_template.few_shot_pairs()
         self.backend.user_template = self.executor_template.user_template
+        # 用户模板里的 {width}/{height} 也必须是**坐标系**尺寸。
+        # 只把它传给系统提示、却让用户模板去读 image_size，结果是同一次
+        # 请求里两句话互相矛盾（系统说 [0,1000)，用户说 1024×768）。
+        # 见 `LLMBackend.coordinate_space`。
+        self.backend.coordinate_space = self.config.coordinate_space
         if hasattr(self.backend, "image_size"):
             self.backend.image_size = self.config.image_size
 

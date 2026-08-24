@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import inspect
 import logging
 import time
 from typing import TYPE_CHECKING, Any
@@ -427,8 +428,12 @@ class OpenAICompatBackend(LLMBackend):
         text = self.user_template
         for key, value in (
             ("instruction", instruction),
-            ("width", self.image_size[0]),
-            ("height", self.image_size[1]),
+            # **width/height 是坐标系尺寸，不是图片尺寸。** 用后者会让这句
+            # 话与系统提示里的坐标范围互相矛盾，见 `LLMBackend.coordinate_space`
+            ("width", self.coordinate_space[0]),
+            ("height", self.coordinate_space[1]),
+            ("image_width", self.image_size[0]),
+            ("image_height", self.image_size[1]),
         ):
             text = text.replace("{" + key + "}", str(value))
         return text
@@ -457,9 +462,22 @@ class OpenAICompatBackend(LLMBackend):
         for path in ("root_client", "root_async_client", "client", "async_client"):
             target = getattr(client, path, None)
             closer = getattr(target, "close", None)
-            if callable(closer):
-                with contextlib.suppress(Exception):
-                    closer()
+            if not callable(closer):
+                continue
+            with contextlib.suppress(Exception):
+                result = closer()
+                # **异步客户端的 close() 返回协程，不 await 就什么也没关。**
+                #
+                # 原来直接丢弃返回值，于是每次 close() 都打一条
+                # `RuntimeWarning: coroutine 'AsyncAPIClient.close' was never
+                # awaited` —— 而警告本身还是轻的，真正的问题是那句话字面为真：
+                # 连接池根本没关，close() 对异步那一半是空操作。
+                #
+                # 本项目全程走同步调用，异步客户端的池从没被打开过，所以
+                # 关不关都无所谓；但**协程对象必须显式 close 掉**，否则
+                # 它在垃圾回收时才发出警告，噪音会混进评测日志。
+                if inspect.iscoroutine(result):
+                    result.close()
 
     def __enter__(self) -> OpenAICompatBackend:
         return self
