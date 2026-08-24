@@ -61,7 +61,16 @@ from llm.providers import (  # noqa: E402
     resolve,
 )
 
+#: M1 D1 的验收证据。**只有跑全部已配置平台时才写它。**
+#:
+#: 这个文件被覆盖过两次：`--provider zhipu` 单测一家，报告就被重写成
+#: 「通过 1/1 家」，而 M1 D1 要求的是「至少测通两家」——交付物在无人
+#: 察觉的情况下从达标变成不达标，靠 `git checkout` 才捞回来。
+#:
+#: 评测产物是跑一次贵一次的东西，默认行为不该是覆盖。
 REPORT = Path("docs/m1-d1-api-verification.md")
+#: 单平台补测的落点，按 `时间戳-平台.md` 另存，不碰 REPORT。
+RUNS = Path("docs/m1-runs")
 
 #: 当前正在测的截图。_call_with_retry 从这里取，避免多传一层参数
 screenshot_holder: list = [None]
@@ -238,7 +247,7 @@ def _one_line(run: dict) -> str:
 # ---------------------------------------------------------------------- #
 
 
-def write_report(records: list[dict], image_note: str) -> Path:
+def write_report(records: list[dict], image_note: str, full_run: bool = True) -> Path:
     lines = [
         "# M1 D1：多模态 API 连通性验证",
         "",
@@ -305,9 +314,19 @@ def write_report(records: list[dict], image_note: str) -> Path:
         "",
     ]
 
-    REPORT.parent.mkdir(parents=True, exist_ok=True)
-    REPORT.write_text("\n".join(lines), encoding="utf-8")
-    return REPORT
+    text = "\n".join(lines)
+    if full_run:
+        REPORT.parent.mkdir(parents=True, exist_ok=True)
+        REPORT.write_text(text, encoding="utf-8")
+        return REPORT
+
+    # 单平台补测另存，不动 M1 D1 的验收证据
+    RUNS.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    scope = "-".join(r["provider"] for r in records)
+    path = RUNS / f"{stamp}-{scope}.md"
+    path.write_text(text, encoding="utf-8")
+    return path
 
 
 def main() -> int:
@@ -338,8 +357,12 @@ def main() -> int:
         records.append(probe(key, screenshot, args.repeat))
         print()
 
-    path = write_report(records, image_note)
+    # 只有把所有已配置的平台都跑了，才算一次可以覆盖验收证据的完整验证
+    full_run = set(targets) >= set(configured)
+    path = write_report(records, image_note, full_run=full_run)
     print(f"报告已写入：{path}")
+    if not full_run:
+        print(f"  （单平台补测，未覆盖 {REPORT}——那是 M1 D1 的验收证据）")
 
     if args.json:
         print(json.dumps(records, ensure_ascii=False, indent=2, default=str))
