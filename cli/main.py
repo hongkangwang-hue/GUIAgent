@@ -392,18 +392,27 @@ def label(
         _apply_labels(reader, step, [x.strip() for x in labels.split(",") if x.strip()], note)
         return
 
-    pending = reader.failed_steps()
+    # 挑的不只是「执行失败」的步 —— 实测 43 条轨迹里一个 failed 都没有，
+    # 真正要标的是**执行成功但没用**的步（原地重复、零动作报完成）。
+    # 详见 TrajectoryReader.steps_to_label 的说明。
+    pending = reader.steps_to_label()
     if not pending:
-        typer.secho("这条轨迹没有失败步骤，不需要打标。", fg="green")
+        typer.secho("这条轨迹没有需要打标的步骤。", fg="green")
         return
 
-    typer.echo(f"\n{len(pending)} 个失败步骤待打标。可用标签：\n{describe_labels()}\n")
-    for record in pending:
+    typer.echo("")
+    typer.echo(f"{len(pending)} 个步骤待打标。可用标签：")
+    typer.echo(describe_labels())
+    typer.echo("")
+    for record, why in pending:
         typer.secho(f"  {record.summary()}", fg="red")
+        typer.secho(f"      挑中原因：{why}", fg="yellow")
         if record.model_thinking:
             typer.echo(f"      思考：{record.model_thinking}")
         if record.raw_output:
             typer.echo(f"      原始：{record.raw_output[:200]}")
+        if record.screenshot_before:
+            typer.echo(f"      截图：{reader.frame(record.screenshot_before)}")
         if record.labels:
             typer.echo(f"      已标：{', '.join(record.labels)}")
 

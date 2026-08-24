@@ -439,13 +439,83 @@ class TrajectoryReader:
         return self.root / relative_path
 
     def failed_steps(self) -> list[StepRecord]:
-        """需要打标的步骤。
+        """动作执行本身失败的步骤。
 
         用 `StepRecord.failed` 而不是 ``not succeeded``：后者会把模型报告
         完成的收尾步也算进来，于是每条轨迹都至少有一条"待打标"，而它其实
         什么问题都没有。
+
+        **但这个集合不足以支撑打标**，见 `steps_to_label()`。
         """
         return [s for s in self.iter_steps() if s.failed]
+
+    def steps_to_label(self) -> list[tuple[StepRecord, str]]:
+        """值得人工打标的步骤，附上「为什么挑中它」。
+
+        ## 为什么不能只挑执行失败的步
+
+        M2 的 43 条真实轨迹里，`execution_status` 只出现过 `ok`（282 步）
+        与 `no_action`（162 步）——**一个 `failed` 都没有**。于是
+        `failed_steps()` 在每条轨迹上都返回空，`label` 一律回答
+        「没有失败步骤，不需要打标」，M2 验收标准 6 无从执行。
+
+        当初那个筛选条件的前提就错了：真正要标的不是「动作没执行成功」，
+        而是**「动作执行成功但没用」**。实测里的三种形态：
+
+        1. **连续重复同一动作**（占总步数 33%，最长连发 12 次）。
+           每一次点击都返回 ok，可屏幕纹丝不动。
+        2. **零动作报完成**：子任务以 `done` 收尾，而这个子任务里
+           一个动作都没成功执行过。
+        3. 动作执行失败（原有的那一类，实测未出现，但保留）。
+
+        ## 每段重复只挑一步
+
+        连发 12 次就offer 12 步会把打标变成体力活。每段连续重复只offer
+        **第二步**（即第一次重复），说明里带上这一段连发了几次——
+        人看一眼就知道发生了什么，标一次即可。
+        """
+        steps = list(self.iter_steps())
+        picked: dict[int, str] = {}
+
+        # --- 1. 执行失败 ---
+        for record in steps:
+            if record.failed:
+                picked[record.step] = f"动作执行失败：{record.error or record.execution_status}"
+
+        # --- 2. 连续重复同一动作，每段只挑第一次重复 ---
+        run_start = 0
+        for index in range(1, len(steps)):
+            previous, current = steps[index - 1], steps[index]
+            same = (
+                current.subtask_id == previous.subtask_id
+                and current.action_intent
+                and current.action_intent == previous.action_intent
+                and not current.action_intent.get("done")
+            )
+            if not same:
+                run_start = index
+                continue
+            if index - 1 == run_start:  # 这一段的第一次重复
+                length = 2
+                probe = index + 1
+                while probe < len(steps) and steps[probe].action_intent == current.action_intent:
+                    length += 1
+                    probe += 1
+                picked.setdefault(current.step, f"原地重复：同一动作连发 {length} 次")
+
+        # --- 3. 零动作报完成 ---
+        by_subtask: dict[int, list[StepRecord]] = {}
+        for record in steps:
+            by_subtask.setdefault(record.subtask_id, []).append(record)
+        for group in by_subtask.values():
+            last = group[-1]
+            if last.is_terminal and not any(r.succeeded for r in group):
+                picked.setdefault(
+                    last.step,
+                    f"零动作报完成：子任务 #{last.subtask_id} 共 {len(group)} 步，无一步执行成功",
+                )
+
+        return [(r, picked[r.step]) for r in steps if r.step in picked]
 
     # ------------------------------------------------------------------ #
 
