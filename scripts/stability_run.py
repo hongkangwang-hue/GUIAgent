@@ -95,6 +95,9 @@ class Report:
     rss_slope_mb_per_min: float = 0.0
     handle_slope_per_min: float = 0.0
     thread_slope_per_min: float = 0.0
+    #: 后半段（稳态）斜率。**判泄漏只看这一组。**
+    rss_slope_steady: float = 0.0
+    handle_slope_steady: float = 0.0
     crashed: bool = False
 
 
@@ -149,6 +152,30 @@ def _slope(samples: list[Sample], field_name: str = "rss_mb") -> float:
     return round(numerator / denominator, 3)
 
 
+def steady_slope(samples: list[Sample], field_name: str) -> tuple[float, float]:
+    """返回 (整段斜率, 后半段斜率)。**判泄漏要看后半段。**
+
+    第一版只拟合整段，在这份实测数据上直接给出了错误结论：
+
+        22.2 分钟：RSS 72→189MB，句柄 369→1521
+        30.6 分钟：RSS 72→189MB，句柄 371→1520
+
+    跑久了 8 分钟，两个终值几乎一模一样 —— 真泄漏的话跑更久必然更高。
+    实际是启动期爬升后收敛到稳态（加载 OCR/UIA/dxcam、线程池与连接池
+    预热），后半段已经平了。
+
+    而整段拟合把启动期的陡坡摊到全程，报出「持续上涨」。更糟的是句柄
+    那一项算出 +9.9/分钟，阈值 10.0，**差 0.1 就翻转结论** ——
+    一个挪一点阈值就变号的指标不能用来下判断。
+
+    所以分开看：整段斜率描述「这一跑总共涨了多少」，后半段斜率回答
+    「稳态之后还在不在涨」。**只有后者能判泄漏。**
+    """
+    overall = _slope(samples, field_name)
+    half = samples[len(samples) // 2 :]
+    return overall, _slope(half, field_name)
+
+
 def run_reset(commands: list[str], dry_run: bool) -> None:
     for command in commands or []:
         if dry_run:
@@ -167,6 +194,33 @@ def run_reset(commands: list[str], dry_run: bool) -> None:
         time.sleep(1.0)
 
 
+def reanalyze(path: Path) -> int:
+    """用已有的采样数据重算结论。
+
+    **判定口径改了不该重跑 30 分钟。** 采样是昂贵的（真实 API 费用 +
+    半小时机器时间），而从采样到结论那一段是纯计算 —— 两者分开，
+    改口径就只是重算。
+
+    第一版没有这个入口，于是「整段斜率报错了结论」这件事一被发现，
+    唯一的选择就是再跑一次。
+    """
+    if not path.exists():
+        print(f"找不到 {path}")
+        return 1
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    report = Report(**{k: v for k, v in payload.items() if k in Report.__dataclass_fields__})
+    samples = [Sample(**s) for s in report.samples]
+    if len(samples) < 3:
+        print("采样点太少，算不出趋势。")
+        return 1
+    report.rss_slope_mb_per_min, report.rss_slope_steady = steady_slope(samples, "rss_mb")
+    report.handle_slope_per_min, report.handle_slope_steady = steady_slope(samples, "handles")
+    report.thread_slope_per_min = _slope(samples, "threads")
+    print(f"（重算 {path}，未跑新测试）")
+    render(report, samples)
+    return 0
+
+
 def main() -> int:  # noqa: PLR0915 —— 长跑脚本，线性叙事比拆函数好读
     _console()
     parser = argparse.ArgumentParser(description="连续跑 N 分钟的稳定性测试（M2 验收 10）")
@@ -176,7 +230,15 @@ def main() -> int:  # noqa: PLR0915 —— 长跑脚本，线性叙事比拆函�
     parser.add_argument("--tasks", default=str(TASK_FILE))
     parser.add_argument("--provider", default="dashscope")
     parser.add_argument("--max-steps", type=int, default=6, help="每子任务步数上限，长跑取小值")
+    parser.add_argument(
+        "--analyze",
+        default="",
+        help="不跑测试，只用已有的 raw json 重算结论。改了判定口径时用，省一次 30 分钟。",
+    )
     args = parser.parse_args()
+
+    if args.analyze:
+        return reanalyze(Path(args.analyze))
 
     import psutil
     import yaml
@@ -306,12 +368,26 @@ def main() -> int:  # noqa: PLR0915 —— 长跑脚本，线性叙事比拆函�
     report.samples.append(asdict(_sample(process, started, index)))
     report.errors = dict(errors)
     samples = [Sample(**s) for s in report.samples]
-    report.rss_slope_mb_per_min = _slope(samples, "rss_mb")
-    report.handle_slope_per_min = _slope(samples, "handles")
+    report.rss_slope_mb_per_min, report.rss_slope_steady = steady_slope(samples, "rss_mb")
+    report.handle_slope_per_min, report.handle_slope_steady = steady_slope(samples, "handles")
     report.thread_slope_per_min = _slope(samples, "threads")
 
     render(report, samples)
     return 1 if report.crashed else 0
+
+
+def _verdict(steady: float, threshold: float, what: str) -> str:
+    """把稳态斜率翻译成一句话。
+
+    **阈值只在稳态斜率上用。** 第一版把阈值用在整段斜率上，句柄那项
+    算出 +9.9 而阈值是 10.0 —— 差 0.1 结论就翻转。稳态斜率在没有泄漏时
+    应当贴近 0，所以阈值离它很远，不会出现这种擦边情况。
+    """
+    if steady > threshold:
+        return f"**可疑：稳态之后{what}仍在上涨，长跑会出问题。**"
+    if steady < -threshold:
+        return f"{what}在回落，可能是缓存释放，不必处理。"
+    return f"{what}已进入稳态，未见泄漏。"
 
 
 def render(report: Report, samples: list[Sample]) -> None:
@@ -332,12 +408,13 @@ def render(report: Report, samples: list[Sample]) -> None:
             print(f"     {name}: {count} 次")
     if rss:
         print(f"  RSS        起 {rss[0]:.0f}MB → 止 {rss[-1]:.0f}MB，峰值 {max(rss):.0f}MB")
-        print(f"  RSS 斜率   {report.rss_slope_mb_per_min:+.2f} MB/分钟")
-        # 阈值是经验值：30 分钟涨 30MB 以内当作正常波动
-        if report.rss_slope_mb_per_min > 1.0:
-            print("     **可疑：内存持续上涨，按此速率长跑会有问题。**")
-        else:
-            print("     未见持续上涨。")
+        print(
+            f"  RSS 斜率   整段 {report.rss_slope_mb_per_min:+.2f}"
+            f"    **稳态 {report.rss_slope_steady:+.2f} MB/分钟**"
+        )
+        # **判泄漏只看稳态。** 整段拟合会把启动期的爬升摊到全程，
+        # 在一条先涨后平的曲线上报出「持续上涨」
+        print("     " + _verdict(report.rss_slope_steady, 0.5, "内存"))
     if samples:
         print(
             f"  线程       {samples[0].threads} → {samples[-1].threads}"
@@ -346,13 +423,10 @@ def render(report: Report, samples: list[Sample]) -> None:
         if samples[-1].handles:
             print(
                 f"  句柄       {samples[0].handles} → {samples[-1].handles}"
-                f"（{report.handle_slope_per_min:+.1f}/分钟）"
+                f"（整段 {report.handle_slope_per_min:+.1f}"
+                f"    **稳态 {report.handle_slope_steady:+.1f}/分钟**）"
             )
-            # 阈值经验值：每分钟净增 10 个以上句柄，几小时的长跑就会出事
-            if report.handle_slope_per_min > 10.0:
-                print("     **可疑：句柄持续上涨，多半是某个资源每轮新建、从不释放。**")
-            else:
-                print("     未见持续上涨。")
+            print("     " + _verdict(report.handle_slope_steady, 5.0, "句柄"))
 
     RAW.parent.mkdir(parents=True, exist_ok=True)
     RAW.write_text(json.dumps(asdict(report), ensure_ascii=False, indent=2), encoding="utf-8")
@@ -372,14 +446,16 @@ def render(report: Report, samples: list[Sample]) -> None:
     if rss:
         lines += [
             f"- RSS：起 {rss[0]:.0f}MB → 止 {rss[-1]:.0f}MB，峰值 {max(rss):.0f}MB",
-            f"- RSS 斜率：**{report.rss_slope_mb_per_min:+.2f} MB/分钟**"
-            + ("（可疑）" if report.rss_slope_mb_per_min > 1.0 else "（未见持续上涨）"),
+            f"- RSS 斜率：整段 {report.rss_slope_mb_per_min:+.2f}，"
+            f"**稳态 {report.rss_slope_steady:+.2f} MB/分钟**"
+            + ("（可疑）" if report.rss_slope_steady > 0.5 else "（已进入稳态）"),
         ]
     if samples and samples[-1].handles:
         lines += [
             f"- 句柄：{samples[0].handles} → {samples[-1].handles}，"
-            f"斜率 **{report.handle_slope_per_min:+.1f}/分钟**"
-            + ("（可疑）" if report.handle_slope_per_min > 10.0 else "（未见持续上涨）"),
+            f"整段 {report.handle_slope_per_min:+.1f}，"
+            f"**稳态 {report.handle_slope_steady:+.1f}/分钟**"
+            + ("（可疑）" if report.handle_slope_steady > 5.0 else "（已进入稳态）"),
         ]
     lines += [
         "",
