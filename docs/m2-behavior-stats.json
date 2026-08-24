@@ -1,336 +1,859 @@
 {
-  "trajectories": 95,
-  "steps": 896,
-  "subtasks": 374,
-  "empty_done_subtasks": 143,
-  "repeat_steps": 119,
-  "max_repeat_run": 7,
+  "trajectories": 43,
+  "steps": 444,
+  "subtasks": 174,
+  "empty_done_subtasks": 48,
+  "repeat_steps": 146,
+  "max_repeat_run": 12,
+  "consecutive_done": 46,
   "actions": {
-    "done": 896
+    "left_click": 185,
+    "（无动作·done）": 162,
+    "type": 34,
+    "key": 58,
+    "double_click": 5
   },
   "execution_status": {
-    "ok": 549,
-    "no_action": 347
+    "ok": 282,
+    "no_action": 162
   },
   "grounding_source": {
-    "native": 340,
-    "-": 347,
-    "skipped": 209
+    "native": 190,
+    "-": 162,
+    "skipped": 92
   },
   "by_instruction": {
-    "关闭计算器窗口": {
-      "n": 17,
-      "steps": 36,
-      "repeats": 2
-    },
     "在「测试消息」程序里发送一条内容为「你好世界」的": {
-      "n": 22,
-      "steps": 280,
-      "repeats": 42
+      "n": 10,
+      "steps": 142,
+      "repeats": 43
+    },
+    "关闭计算器窗口": {
+      "n": 10,
+      "steps": 21,
+      "repeats": 0
     },
     "用记事本打开 C:\\agent-test\\测试文": {
-      "n": 22,
-      "steps": 301,
-      "repeats": 53
+      "n": 10,
+      "steps": 130,
+      "repeats": 12
     },
     "打开 Microsoft Edge，在地址栏搜索": {
-      "n": 17,
-      "steps": 187,
-      "repeats": 19
+      "n": 8,
+      "steps": 121,
+      "repeats": 91
     },
     "打开 Microsoft Edge 浏览器": {
-      "n": 17,
-      "steps": 92,
-      "repeats": 3
+      "n": 5,
+      "steps": 30,
+      "repeats": 0
     }
   },
   "worst": [
     {
-      "trajectory": "traj-20260824-000752-021910",
+      "trajectory": "traj-20260824-100023-e2fda9",
       "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
-      "step": 11,
+      "step": 15,
       "run": 4,
-      "action": "done"
+      "action": "left_click|@15,23"
     },
     {
-      "trajectory": "traj-20260824-000729-5e7fe9",
+      "trajectory": "traj-20260824-100023-e2fda9",
       "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
-      "step": 8,
-      "run": 4,
-      "action": "done"
-    },
-    {
-      "trajectory": "traj-20260824-000729-5e7fe9",
-      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
-      "step": 9,
+      "step": 16,
       "run": 5,
-      "action": "done"
+      "action": "left_click|@15,23"
     },
     {
-      "trajectory": "traj-20260824-000709-d896d0",
+      "trajectory": "traj-20260824-100023-e2fda9",
       "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
-      "step": 7,
-      "run": 4,
-      "action": "done"
-    },
-    {
-      "trajectory": "traj-20260824-000709-d896d0",
-      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
-      "step": 8,
-      "run": 5,
-      "action": "done"
-    },
-    {
-      "trajectory": "traj-20260824-000645-c0ea9f",
-      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
-      "step": 10,
-      "run": 4,
-      "action": "done"
-    },
-    {
-      "trajectory": "traj-20260824-000604-51e9e7",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 4,
-      "run": 4,
-      "action": "done"
-    },
-    {
-      "trajectory": "traj-20260824-000604-51e9e7",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 5,
-      "run": 5,
-      "action": "done"
-    },
-    {
-      "trajectory": "traj-20260824-000604-51e9e7",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 6,
+      "step": 17,
       "run": 6,
-      "action": "done"
+      "action": "left_click|@15,23"
     },
     {
-      "trajectory": "traj-20260824-000604-51e9e7",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 7,
+      "trajectory": "traj-20260824-100023-e2fda9",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 18,
       "run": 7,
-      "action": "done"
+      "action": "left_click|@15,23"
     },
     {
-      "trajectory": "traj-20260824-000544-cf2cf6",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 5,
+      "trajectory": "traj-20260824-100023-e2fda9",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 19,
+      "run": 8,
+      "action": "left_click|@15,23"
+    },
+    {
+      "trajectory": "traj-20260824-100023-e2fda9",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 20,
+      "run": 9,
+      "action": "left_click|@15,23"
+    },
+    {
+      "trajectory": "traj-20260824-100023-e2fda9",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 21,
+      "run": 10,
+      "action": "left_click|@15,23"
+    },
+    {
+      "trajectory": "traj-20260824-100023-e2fda9",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 22,
+      "run": 11,
+      "action": "left_click|@15,23"
+    },
+    {
+      "trajectory": "traj-20260824-100023-e2fda9",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 23,
+      "run": 12,
+      "action": "left_click|@15,23"
+    },
+    {
+      "trajectory": "traj-20260824-095538-d9518f",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 13,
       "run": 4,
-      "action": "done"
+      "action": "left_click|@16,23"
     },
     {
-      "trajectory": "traj-20260824-000544-cf2cf6",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 6,
+      "trajectory": "traj-20260824-095538-d9518f",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 14,
       "run": 5,
-      "action": "done"
+      "action": "left_click|@16,23"
     },
     {
-      "trajectory": "traj-20260824-000544-cf2cf6",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 7,
+      "trajectory": "traj-20260824-095538-d9518f",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 15,
       "run": 6,
-      "action": "done"
+      "action": "left_click|@16,23"
     },
     {
-      "trajectory": "traj-20260824-000544-cf2cf6",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 8,
+      "trajectory": "traj-20260824-095538-d9518f",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 16,
       "run": 7,
-      "action": "done"
+      "action": "left_click|@16,23"
     },
     {
-      "trajectory": "traj-20260824-000343-3fd2bc",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 5,
+      "trajectory": "traj-20260824-095538-d9518f",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 17,
+      "run": 8,
+      "action": "left_click|@16,23"
+    },
+    {
+      "trajectory": "traj-20260824-095538-d9518f",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 18,
+      "run": 9,
+      "action": "left_click|@16,23"
+    },
+    {
+      "trajectory": "traj-20260824-095538-d9518f",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 19,
+      "run": 10,
+      "action": "left_click|@16,23"
+    },
+    {
+      "trajectory": "traj-20260824-095538-d9518f",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 20,
+      "run": 11,
+      "action": "left_click|@16,23"
+    },
+    {
+      "trajectory": "traj-20260824-095538-d9518f",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 21,
+      "run": 12,
+      "action": "left_click|@16,23"
+    },
+    {
+      "trajectory": "traj-20260824-095047-b006ef",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 13,
       "run": 4,
-      "action": "done"
+      "action": "left_click|@15,23"
     },
     {
-      "trajectory": "traj-20260824-000343-3fd2bc",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 6,
+      "trajectory": "traj-20260824-095047-b006ef",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 14,
       "run": 5,
-      "action": "done"
+      "action": "left_click|@15,23"
     },
     {
-      "trajectory": "traj-20260824-000343-3fd2bc",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 7,
+      "trajectory": "traj-20260824-095047-b006ef",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 15,
       "run": 6,
-      "action": "done"
+      "action": "left_click|@15,23"
     },
     {
-      "trajectory": "traj-20260824-000343-3fd2bc",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 8,
+      "trajectory": "traj-20260824-095047-b006ef",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 16,
       "run": 7,
-      "action": "done"
+      "action": "left_click|@15,23"
     },
     {
-      "trajectory": "traj-20260823-235934-7031ce",
+      "trajectory": "traj-20260824-095047-b006ef",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 17,
+      "run": 8,
+      "action": "left_click|@15,23"
+    },
+    {
+      "trajectory": "traj-20260824-095047-b006ef",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 18,
+      "run": 9,
+      "action": "left_click|@15,23"
+    },
+    {
+      "trajectory": "traj-20260824-095047-b006ef",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 19,
+      "run": 10,
+      "action": "left_click|@15,23"
+    },
+    {
+      "trajectory": "traj-20260824-095047-b006ef",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 20,
+      "run": 11,
+      "action": "left_click|@15,23"
+    },
+    {
+      "trajectory": "traj-20260824-095047-b006ef",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 21,
+      "run": 12,
+      "action": "left_click|@15,23"
+    },
+    {
+      "trajectory": "traj-20260824-094416-aa40f0",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 14,
+      "run": 4,
+      "action": "left_click|@16,23"
+    },
+    {
+      "trajectory": "traj-20260824-094416-aa40f0",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 15,
+      "run": 5,
+      "action": "left_click|@16,23"
+    },
+    {
+      "trajectory": "traj-20260824-094416-aa40f0",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 16,
+      "run": 6,
+      "action": "left_click|@16,23"
+    },
+    {
+      "trajectory": "traj-20260824-094416-aa40f0",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 17,
+      "run": 7,
+      "action": "left_click|@16,23"
+    },
+    {
+      "trajectory": "traj-20260824-094416-aa40f0",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 18,
+      "run": 8,
+      "action": "left_click|@16,23"
+    },
+    {
+      "trajectory": "traj-20260824-094416-aa40f0",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 19,
+      "run": 9,
+      "action": "left_click|@16,23"
+    },
+    {
+      "trajectory": "traj-20260824-094416-aa40f0",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 20,
+      "run": 10,
+      "action": "left_click|@16,23"
+    },
+    {
+      "trajectory": "traj-20260824-094416-aa40f0",
+      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "step": 21,
+      "run": 11,
+      "action": "left_click|@16,23"
+    },
+    {
+      "trajectory": "traj-20260824-003112-ae48e7",
       "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
       "step": 6,
       "run": 4,
-      "action": "done"
+      "action": "left_click|@10,3"
     },
     {
-      "trajectory": "traj-20260823-233608-288fbf",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 5,
-      "run": 4,
-      "action": "done"
-    },
-    {
-      "trajectory": "traj-20260823-233608-288fbf",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 6,
-      "run": 5,
-      "action": "done"
-    },
-    {
-      "trajectory": "traj-20260823-232635-d295d0",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 7,
-      "run": 4,
-      "action": "done"
-    },
-    {
-      "trajectory": "traj-20260823-232635-d295d0",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 8,
-      "run": 5,
-      "action": "done"
-    },
-    {
-      "trajectory": "traj-20260823-225555-18201d",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 5,
-      "run": 4,
-      "action": "done"
-    },
-    {
-      "trajectory": "traj-20260823-225555-18201d",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 6,
-      "run": 5,
-      "action": "done"
-    },
-    {
-      "trajectory": "traj-20260823-225555-18201d",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 7,
-      "run": 6,
-      "action": "done"
-    },
-    {
-      "trajectory": "traj-20260823-225541-e5eba2",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 4,
-      "run": 4,
-      "action": "done"
-    },
-    {
-      "trajectory": "traj-20260823-225541-e5eba2",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 5,
-      "run": 5,
-      "action": "done"
-    },
-    {
-      "trajectory": "traj-20260823-225541-e5eba2",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 6,
-      "run": 6,
-      "action": "done"
-    },
-    {
-      "trajectory": "traj-20260823-225541-e5eba2",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 7,
-      "run": 7,
-      "action": "done"
-    },
-    {
-      "trajectory": "traj-20260823-225527-7853d1",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 4,
-      "run": 4,
-      "action": "done"
-    },
-    {
-      "trajectory": "traj-20260823-225527-7853d1",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 5,
-      "run": 5,
-      "action": "done"
-    },
-    {
-      "trajectory": "traj-20260823-225527-7853d1",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 6,
-      "run": 6,
-      "action": "done"
-    },
-    {
-      "trajectory": "traj-20260823-225512-828303",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 4,
-      "run": 4,
-      "action": "done"
-    },
-    {
-      "trajectory": "traj-20260823-225512-828303",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 5,
-      "run": 5,
-      "action": "done"
-    },
-    {
-      "trajectory": "traj-20260823-225512-828303",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 6,
-      "run": 6,
-      "action": "done"
-    },
-    {
-      "trajectory": "traj-20260823-225512-828303",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 7,
-      "run": 7,
-      "action": "done"
-    },
-    {
-      "trajectory": "traj-20260823-225455-d03b41",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
-      "step": 6,
-      "run": 4,
-      "action": "done"
-    },
-    {
-      "trajectory": "traj-20260823-225455-d03b41",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
+      "trajectory": "traj-20260824-003112-ae48e7",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
       "step": 7,
       "run": 5,
-      "action": "done"
+      "action": "left_click|@10,3"
     },
     {
-      "trajectory": "traj-20260823-225455-d03b41",
-      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
+      "trajectory": "traj-20260824-003112-ae48e7",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
       "step": 8,
       "run": 6,
-      "action": "done"
+      "action": "left_click|@10,3"
     },
     {
-      "trajectory": "traj-20260823-223714-a2f87a",
-      "instruction": "在「测试消息」程序里发送一条内容为「你好世界」的消息",
+      "trajectory": "traj-20260824-003112-ae48e7",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 9,
+      "run": 7,
+      "action": "left_click|@10,3"
+    },
+    {
+      "trajectory": "traj-20260824-003112-ae48e7",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 10,
+      "run": 8,
+      "action": "left_click|@10,3"
+    },
+    {
+      "trajectory": "traj-20260824-003112-ae48e7",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 11,
+      "run": 9,
+      "action": "left_click|@10,3"
+    },
+    {
+      "trajectory": "traj-20260824-003112-ae48e7",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 12,
+      "run": 10,
+      "action": "left_click|@10,3"
+    },
+    {
+      "trajectory": "traj-20260824-003112-ae48e7",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 13,
+      "run": 11,
+      "action": "left_click|@10,3"
+    },
+    {
+      "trajectory": "traj-20260824-003112-ae48e7",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 14,
+      "run": 12,
+      "action": "left_click|@10,3"
+    },
+    {
+      "trajectory": "traj-20260824-003020-59f8aa",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 6,
+      "run": 4,
+      "action": "left_click|@9,3"
+    },
+    {
+      "trajectory": "traj-20260824-003020-59f8aa",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 7,
+      "run": 5,
+      "action": "left_click|@9,3"
+    },
+    {
+      "trajectory": "traj-20260824-003020-59f8aa",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 8,
+      "run": 6,
+      "action": "left_click|@9,3"
+    },
+    {
+      "trajectory": "traj-20260824-003020-59f8aa",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 9,
+      "run": 7,
+      "action": "left_click|@9,3"
+    },
+    {
+      "trajectory": "traj-20260824-003020-59f8aa",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 10,
+      "run": 8,
+      "action": "left_click|@9,3"
+    },
+    {
+      "trajectory": "traj-20260824-003020-59f8aa",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 11,
+      "run": 9,
+      "action": "left_click|@9,3"
+    },
+    {
+      "trajectory": "traj-20260824-003020-59f8aa",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 12,
+      "run": 10,
+      "action": "left_click|@9,3"
+    },
+    {
+      "trajectory": "traj-20260824-003020-59f8aa",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 13,
+      "run": 11,
+      "action": "left_click|@9,3"
+    },
+    {
+      "trajectory": "traj-20260824-003020-59f8aa",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 14,
+      "run": 12,
+      "action": "left_click|@9,3"
+    },
+    {
+      "trajectory": "traj-20260824-002930-1069ef",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 6,
+      "run": 4,
+      "action": "left_click|@8,3"
+    },
+    {
+      "trajectory": "traj-20260824-002930-1069ef",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 7,
+      "run": 5,
+      "action": "left_click|@8,3"
+    },
+    {
+      "trajectory": "traj-20260824-002930-1069ef",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 8,
+      "run": 6,
+      "action": "left_click|@8,3"
+    },
+    {
+      "trajectory": "traj-20260824-002930-1069ef",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 9,
+      "run": 7,
+      "action": "left_click|@8,3"
+    },
+    {
+      "trajectory": "traj-20260824-002930-1069ef",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 10,
+      "run": 8,
+      "action": "left_click|@8,3"
+    },
+    {
+      "trajectory": "traj-20260824-002930-1069ef",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 11,
+      "run": 9,
+      "action": "left_click|@8,3"
+    },
+    {
+      "trajectory": "traj-20260824-002930-1069ef",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 12,
+      "run": 10,
+      "action": "left_click|@8,3"
+    },
+    {
+      "trajectory": "traj-20260824-002930-1069ef",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 13,
+      "run": 11,
+      "action": "left_click|@8,3"
+    },
+    {
+      "trajectory": "traj-20260824-002930-1069ef",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 14,
+      "run": 12,
+      "action": "left_click|@8,3"
+    },
+    {
+      "trajectory": "traj-20260824-002840-4cd872",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 6,
+      "run": 4,
+      "action": "left_click|@9,3"
+    },
+    {
+      "trajectory": "traj-20260824-002840-4cd872",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 7,
+      "run": 5,
+      "action": "left_click|@9,3"
+    },
+    {
+      "trajectory": "traj-20260824-002840-4cd872",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 8,
+      "run": 6,
+      "action": "left_click|@9,3"
+    },
+    {
+      "trajectory": "traj-20260824-002840-4cd872",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 9,
+      "run": 7,
+      "action": "left_click|@9,3"
+    },
+    {
+      "trajectory": "traj-20260824-002840-4cd872",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 10,
+      "run": 8,
+      "action": "left_click|@9,3"
+    },
+    {
+      "trajectory": "traj-20260824-002840-4cd872",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 11,
+      "run": 9,
+      "action": "left_click|@9,3"
+    },
+    {
+      "trajectory": "traj-20260824-002840-4cd872",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 12,
+      "run": 10,
+      "action": "left_click|@9,3"
+    },
+    {
+      "trajectory": "traj-20260824-002840-4cd872",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 13,
+      "run": 11,
+      "action": "left_click|@9,3"
+    },
+    {
+      "trajectory": "traj-20260824-002840-4cd872",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 14,
+      "run": 12,
+      "action": "left_click|@9,3"
+    },
+    {
+      "trajectory": "traj-20260824-002751-350960",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 6,
+      "run": 4,
+      "action": "left_click|@9,3"
+    },
+    {
+      "trajectory": "traj-20260824-002751-350960",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 7,
+      "run": 5,
+      "action": "left_click|@9,3"
+    },
+    {
+      "trajectory": "traj-20260824-002751-350960",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 8,
+      "run": 6,
+      "action": "left_click|@9,3"
+    },
+    {
+      "trajectory": "traj-20260824-002751-350960",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 9,
+      "run": 7,
+      "action": "left_click|@9,3"
+    },
+    {
+      "trajectory": "traj-20260824-002751-350960",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 10,
+      "run": 8,
+      "action": "left_click|@9,3"
+    },
+    {
+      "trajectory": "traj-20260824-002751-350960",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 11,
+      "run": 9,
+      "action": "left_click|@9,3"
+    },
+    {
+      "trajectory": "traj-20260824-002751-350960",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 12,
+      "run": 10,
+      "action": "left_click|@9,3"
+    },
+    {
+      "trajectory": "traj-20260824-002751-350960",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 13,
+      "run": 11,
+      "action": "left_click|@9,3"
+    },
+    {
+      "trajectory": "traj-20260824-002751-350960",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 14,
+      "run": 12,
+      "action": "left_click|@9,3"
+    },
+    {
+      "trajectory": "traj-20260824-000436-90be63",
+      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
+      "step": 13,
+      "run": 4,
+      "action": "left_click|@25,30"
+    },
+    {
+      "trajectory": "traj-20260824-000436-90be63",
+      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
+      "step": 14,
+      "run": 5,
+      "action": "left_click|@25,30"
+    },
+    {
+      "trajectory": "traj-20260824-000436-90be63",
+      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
+      "step": 15,
+      "run": 6,
+      "action": "left_click|@25,30"
+    },
+    {
+      "trajectory": "traj-20260824-000436-90be63",
+      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
+      "step": 16,
+      "run": 7,
+      "action": "left_click|@25,30"
+    },
+    {
+      "trajectory": "traj-20260824-000436-90be63",
+      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
+      "step": 17,
+      "run": 8,
+      "action": "left_click|@25,30"
+    },
+    {
+      "trajectory": "traj-20260824-000436-90be63",
+      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
+      "step": 18,
+      "run": 9,
+      "action": "left_click|@25,30"
+    },
+    {
+      "trajectory": "traj-20260824-000436-90be63",
+      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
+      "step": 19,
+      "run": 10,
+      "action": "left_click|@25,30"
+    },
+    {
+      "trajectory": "traj-20260824-000436-90be63",
+      "instruction": "用记事本打开 C:\\agent-test\\测试文档.txt",
+      "step": 20,
+      "run": 11,
+      "action": "left_click|@25,30"
+    },
+    {
+      "trajectory": "traj-20260824-000247-9ed0e6",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
       "step": 9,
       "run": 4,
-      "action": "done"
+      "action": "key|keys=enter"
+    },
+    {
+      "trajectory": "traj-20260824-000247-9ed0e6",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 10,
+      "run": 5,
+      "action": "key|keys=enter"
+    },
+    {
+      "trajectory": "traj-20260824-000247-9ed0e6",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 11,
+      "run": 6,
+      "action": "key|keys=enter"
+    },
+    {
+      "trajectory": "traj-20260824-000247-9ed0e6",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 12,
+      "run": 7,
+      "action": "key|keys=enter"
+    },
+    {
+      "trajectory": "traj-20260824-000247-9ed0e6",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 13,
+      "run": 8,
+      "action": "key|keys=enter"
+    },
+    {
+      "trajectory": "traj-20260824-000247-9ed0e6",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 14,
+      "run": 9,
+      "action": "key|keys=enter"
+    },
+    {
+      "trajectory": "traj-20260824-000247-9ed0e6",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 15,
+      "run": 10,
+      "action": "key|keys=enter"
+    },
+    {
+      "trajectory": "traj-20260824-000247-9ed0e6",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 16,
+      "run": 11,
+      "action": "key|keys=enter"
+    },
+    {
+      "trajectory": "traj-20260824-000247-9ed0e6",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 17,
+      "run": 12,
+      "action": "key|keys=enter"
+    },
+    {
+      "trajectory": "traj-20260824-000151-902d4d",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 9,
+      "run": 4,
+      "action": "key|keys=enter"
+    },
+    {
+      "trajectory": "traj-20260824-000151-902d4d",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 10,
+      "run": 5,
+      "action": "key|keys=enter"
+    },
+    {
+      "trajectory": "traj-20260824-000151-902d4d",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 11,
+      "run": 6,
+      "action": "key|keys=enter"
+    },
+    {
+      "trajectory": "traj-20260824-000151-902d4d",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 12,
+      "run": 7,
+      "action": "key|keys=enter"
+    },
+    {
+      "trajectory": "traj-20260824-000151-902d4d",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 13,
+      "run": 8,
+      "action": "key|keys=enter"
+    },
+    {
+      "trajectory": "traj-20260824-000151-902d4d",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 14,
+      "run": 9,
+      "action": "key|keys=enter"
+    },
+    {
+      "trajectory": "traj-20260824-000151-902d4d",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 15,
+      "run": 10,
+      "action": "key|keys=enter"
+    },
+    {
+      "trajectory": "traj-20260824-000151-902d4d",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 16,
+      "run": 11,
+      "action": "key|keys=enter"
+    },
+    {
+      "trajectory": "traj-20260824-000151-902d4d",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 17,
+      "run": 12,
+      "action": "key|keys=enter"
+    },
+    {
+      "trajectory": "traj-20260824-000052-318cbe",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 9,
+      "run": 4,
+      "action": "key|keys=enter"
+    },
+    {
+      "trajectory": "traj-20260824-000052-318cbe",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 10,
+      "run": 5,
+      "action": "key|keys=enter"
+    },
+    {
+      "trajectory": "traj-20260824-000052-318cbe",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 11,
+      "run": 6,
+      "action": "key|keys=enter"
+    },
+    {
+      "trajectory": "traj-20260824-000052-318cbe",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 12,
+      "run": 7,
+      "action": "key|keys=enter"
+    },
+    {
+      "trajectory": "traj-20260824-000052-318cbe",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 13,
+      "run": 8,
+      "action": "key|keys=enter"
+    },
+    {
+      "trajectory": "traj-20260824-000052-318cbe",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 14,
+      "run": 9,
+      "action": "key|keys=enter"
+    },
+    {
+      "trajectory": "traj-20260824-000052-318cbe",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 15,
+      "run": 10,
+      "action": "key|keys=enter"
+    },
+    {
+      "trajectory": "traj-20260824-000052-318cbe",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 16,
+      "run": 11,
+      "action": "key|keys=enter"
+    },
+    {
+      "trajectory": "traj-20260824-000052-318cbe",
+      "instruction": "打开 Microsoft Edge，在地址栏搜索「Pytho",
+      "step": 17,
+      "run": 12,
+      "action": "key|keys=enter"
     }
   ]
 }
