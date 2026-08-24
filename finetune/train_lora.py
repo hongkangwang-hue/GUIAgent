@@ -193,10 +193,14 @@ def resolve_resume(value: str) -> Path | None:
     以为在续跑而实际从头开始，跑完三小时才发现，比直接报错糟糕得多。
     """
     if value.lower() == "auto":
+        # **跳过 smoke 目录。** 实测踩过：`--smoke --max-steps 1` 结束时
+        # Trainer 仍会存一个 checkpoint-1（save_steps 设成 10^9 也拦不住
+        # 收尾那次保存），于是后来的 `--resume auto` 把一次正式训练续进了
+        # 名为 smoke 的目录 —— 训练本身没问题，但产物名字彻底误导。
         candidates = [
             d
             for d in sorted(OUT_DIR.glob("*"), reverse=True)
-            if d.is_dir() and any(d.glob("checkpoint-*"))
+            if d.is_dir() and d.name != "smoke" and any(d.glob("checkpoint-*"))
         ]
         if not candidates:
             print(f"  [提示] {OUT_DIR} 下没有含 checkpoint 的目录，按新训练开始。")
