@@ -272,6 +272,15 @@ def train(args) -> TrainStats:  # noqa: PLR0915 —— 训练脚本，线性叙�
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     run_dir = OUT_DIR / ("smoke" if args.smoke else time.strftime("%Y%m%d-%H%M%S"))
 
+    # 总优化步数 = 样本数 / (batch × 梯度累积) × epoch。batch 固定为 1。
+    if args.smoke:
+        total_steps = args.max_steps
+    else:
+        per_epoch = max(1, len(train_rows) // args.grad_accum)
+        total_steps = max(1, int(per_epoch * args.epochs))
+    warmup_steps = max(1, int(total_steps * 0.03))
+    print(f"  总步数 {total_steps}    预热 {warmup_steps} 步")
+
     training_args = TrainingArguments(
         output_dir=str(run_dir),
         per_device_train_batch_size=1,
@@ -282,7 +291,11 @@ def train(args) -> TrainStats:  # noqa: PLR0915 —— 训练脚本，线性叙�
         # paged_adamw_8bit：优化器状态分页到内存，显存吃紧时不 OOM
         optim="paged_adamw_8bit",
         lr_scheduler_type="cosine",
-        warmup_ratio=0.03,
+        # **用 warmup_steps 而不是 warmup_ratio。** transformers 5.x 移除了
+        # 后者（实测 5.15.1 直接 TypeError），而 warmup_steps 在 4.x / 5.x
+        # 都在。显式算步数还有个好处：日志里能直接看到预热几步，
+        # 不用再拿比例去乘一个心算的总步数。
+        warmup_steps=warmup_steps,
         logging_steps=1 if args.smoke else 10,
         # 每 200 步存一次，训练中断不至于从头再来
         save_steps=10**9 if args.smoke else 200,
