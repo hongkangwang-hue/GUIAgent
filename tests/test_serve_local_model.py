@@ -183,6 +183,41 @@ class TestChatCompletions:
         )
         assert backend.seen[-1][2] == 64
 
+    def test_客户端要太多时被服务端压到上限(self, client, backend):
+        """**上限由服务端说了算。**
+
+        `OpenAICompatBackend` 默认发 `max_tokens=1024`——对云端合理
+        （50-100 tok/s，十几秒），到本地 3B（实测 7.3 tok/s）就是 140 秒，
+        而客户端超时 90 秒，**必然超时**。离线-基座组第一次 0/25 就是这么来的。
+        客户端不知道这台机器每秒能吐几个 token，所以只能往小了要。
+        """
+        from scripts.serve_local_model import DEFAULT_MAX_NEW_TOKENS
+
+        client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "x"}], "max_tokens": 1024},
+        )
+        assert backend.seen[-1][2] == DEFAULT_MAX_NEW_TOKENS
+
+    def test_没给_max_tokens_时用上限(self, client, backend):
+        from scripts.serve_local_model import DEFAULT_MAX_NEW_TOKENS
+
+        client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "x"}]})
+        assert backend.seen[-1][2] == DEFAULT_MAX_NEW_TOKENS
+
+    def test_上限可以调低(self, backend):
+        """跑更慢的机器时压小它。"""
+        from fastapi.testclient import TestClient
+
+        from scripts.serve_local_model import build_app
+
+        with TestClient(build_app(backend, cap=100)) as small:
+            small.post(
+                "/v1/chat/completions",
+                json={"messages": [{"role": "user", "content": "x"}], "max_tokens": 1024},
+            )
+        assert backend.seen[-1][2] == 100
+
     def test_图片送到后端(self, client, backend):
         client.post(
             "/v1/chat/completions",
@@ -298,6 +333,18 @@ class TestProviderEntry:
         monkeypatch.delenv("SELFHOST_BASE_URL", raising=False)
         backend = build_backend(provider="selfhost", base_url="http://10.0.0.5:9000/v1")
         assert backend.config.base_url == "http://10.0.0.5:9000/v1"
+
+    def test_自建服务的超时比云端长(self, monkeypatch):
+        """90 秒是按云端速度定的（50-100 tok/s），本机 3B 实测 7.3 tok/s。
+
+        拿云端的耐心去等本地的算力，报出来的是 `Request timed out`
+        ——看着像网络问题，其实是超时值没跟着部署形态改。
+        """
+        from llm.factory import LOCAL_TIMEOUT_S, build_backend
+
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "k")
+        assert build_backend(provider="selfhost").timeout == LOCAL_TIMEOUT_S
+        assert build_backend(provider="dashscope").timeout < LOCAL_TIMEOUT_S
 
     def test_selfhost_被判为离线(self, monkeypatch):
         """**它和连百炼用的是同一个后端类**，光看类型分不出来。

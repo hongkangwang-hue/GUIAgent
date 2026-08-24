@@ -51,6 +51,9 @@ from llm.base import LLMBackend
 #: 走本地推理的 provider 名。其余名字都去 `llm.providers` 里查。
 LOCAL_PROVIDER = "local"
 
+#: 连自建本地服务时的超时（秒）。理由见 `build_backend`。
+LOCAL_TIMEOUT_S = 180.0
+
 
 def add_backend_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     """挂上选后端要用的那几个参数。
@@ -132,13 +135,20 @@ def build_backend(args: Any = None, **overrides) -> LLMBackend:
     from llm.openai_compat import OpenAICompatBackend
     from llm.providers import resolve
 
-    return OpenAICompatBackend(
-        resolve(
-            provider or None,
-            model=model or None,
-            base_url=str(pick("base_url", "") or "").strip() or None,
-        )
+    config = resolve(
+        provider or None,
+        model=model or None,
+        base_url=str(pick("base_url", "") or "").strip() or None,
     )
+    # **本地服务要更长的超时。** 默认 90 秒是按云端 API 的速度定的
+    # （50-100 tok/s），而本机 3B 4-bit 实测只有 7.3 tok/s——差一个数量级。
+    # 2026-08-24 的离线-基座组 0/25 就栽在这：调用没失败，是**客户端等不及
+    # 先掐了**，报出来的是 `Request timed out`，看着像网络问题，其实是
+    # 拿云端的耐心去等本地的算力。
+    #
+    # 服务端已把生成长度压到 384（最坏 ~53 秒），这里再留一倍余量。
+    timeout = LOCAL_TIMEOUT_S if config.provider.weights_local else None
+    return OpenAICompatBackend(config, **({"timeout": timeout} if timeout else {}))
 
 
 def describe(backend: LLMBackend) -> str:

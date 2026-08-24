@@ -106,6 +106,22 @@ logger = logging.getLogger("serve_local_model")
 #: 交错的输出。并发恒为 1 是这个场景的事实，用锁把它变成约束。
 _GPU_LOCK = threading.Lock()
 
+#: 生成长度上限，**服务端强制**，不管客户端要多少。
+#:
+#: 2026-08-24 实测：本机 3B 4-bit 持续 **7.3 tok/s**。而
+#: `OpenAICompatBackend` 默认发 `max_tokens=1024`（对云端 API 是合理的，
+#: 那边 50-100 tok/s，1024 也就十几秒），到本地就是 **140 秒**，
+#: 而客户端超时是 90 秒——**模型只要没提前收口，必然超时**。
+#:
+#: 离线-基座组第一次跑因此 0/25：三个任务连规划都没出来（步数 0.0），
+#: 因为规划那一次调用就超时了。
+#:
+#: 384 的依据也是实测：一条动作 JSON 约 40 token，一份任务拆解约 150。
+#: 384 留了一倍余量，最坏耗时 384/7.3 ≈ 53 秒，稳稳在 90 秒之内。
+#: **正常输出根本碰不到这个上限**，它只截断跑飞的生成——而跑飞的生成
+#: 本来也会超时失败，早点失败还便宜些。
+DEFAULT_MAX_NEW_TOKENS = 384
+
 
 def _decode_data_url(url: str):
     """``data:image/jpeg;base64,...`` → PIL Image。
@@ -162,8 +178,11 @@ def to_hf_messages(messages: list[dict]) -> tuple[list[dict], list]:
     return hf_messages, images
 
 
-def build_app(backend):
-    """造 FastAPI 应用。后端从外面传进来，测试时可以塞假的。"""
+def build_app(backend, cap: int = DEFAULT_MAX_NEW_TOKENS):
+    """造 FastAPI 应用。后端从外面传进来，测试时可以塞假的。
+
+    ``cap`` 是生成长度的硬上限，见 `DEFAULT_MAX_NEW_TOKENS`。
+    """
     from fastapi import FastAPI, HTTPException
     from fastapi.responses import JSONResponse
 
@@ -177,6 +196,7 @@ def build_app(backend):
             "model": backend.model,
             "adapter": backend.adapter or None,
             "loaded": backend._model is not None,
+            "max_new_tokens": cap,
         }
 
     @app.get("/v1/models")
@@ -202,7 +222,10 @@ def build_app(backend):
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        max_tokens = int(body.get("max_tokens") or 0)
+        # **上限由服务端说了算。** 客户端的 max_tokens 只能往小了要，
+        # 不能往大了要——它不知道这台机器每秒能吐几个 token。
+        asked = int(body.get("max_tokens") or 0)
+        max_tokens = min(asked, cap) if asked > 0 else cap
         started = time.perf_counter()
         with _GPU_LOCK:
             try:
@@ -297,14 +320,32 @@ def main() -> int:
     print()
 
     if args.preload:
-        # 挂机跑评测时先把权重装好：否则第一个请求要多等十几秒，
-        # 那十几秒会算进第一条任务的延迟里，把首轮数据污染掉
+        # 挂机跑评测时先把权重装好，**并且跑一次真前向**。
+        #
+        # 只装权重不够：2026-08-24 实测，装完权重后的**第一次生成**花了
+        # 153.7 秒才吐 17 个 token，而之后同样的请求只要 4.8 秒——差 32 倍。
+        # 那是 CUDA kernel 首次编译 / cuDNN 自动调优的一次性开销。
+        #
+        # 不热身的话，这 150 秒会落在第一条任务的第一步上：既污染首轮的
+        # 延迟数据，又很可能直接把客户端的 90 秒超时撞爆。
         print("  预加载权重……")
         backend._ensure_model()
-        print("  就绪\n")
+        print("  热身推理（首次前向要编译 CUDA kernel，会慢）……")
+        warm = time.perf_counter()
+        backend.generate(
+            [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+            [],
+            max_new_tokens=8,
+        )
+        print(f"  就绪（热身 {time.perf_counter() - warm:.1f}s）\n")
 
     try:
-        uvicorn.run(build_app(backend), host=args.host, port=args.port, log_level="warning")
+        uvicorn.run(
+            build_app(backend, cap=args.max_new_tokens),
+            host=args.host,
+            port=args.port,
+            log_level="warning",
+        )
     finally:
         backend.close()
     return 0
