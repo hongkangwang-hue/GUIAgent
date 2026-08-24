@@ -69,6 +69,36 @@ VAL_FILE = Path("finetune/data/val.jsonl")
 #: 50 ≈ 屏幕宽度的 5%，在 1920 宽的屏上约 96px——大致是一个按钮的尺度。
 DEFAULT_RADII = (25, 50, 100)
 
+#: 系统提示词里给出的动作空间。输出这之外的动作即为不合规。
+ALLOWED_ACTIONS = frozenset({"left_click", "double_click", "right_click", "mouse_move"})
+
+
+def format_compliant(raw: str) -> bool:
+    """输出是否合规：合法 JSON + 动作在允许集合内 + 带整数 x/y。
+
+    **要和「动作类型对不对」分开统计。** 基座模型的实测输出长这样：
+
+        {"action": "left_click", "x": 682, 345}}      少了 "y" 键
+        {"action": "left_click", "x": [527, 134]}     坐标塞进数组
+        {"action": "type", "text": "Hello World!"}    动作空间里没有的动作
+
+    微调之后准确率一定会涨，而涨的那部分里有多少是「学会了格式」、
+    多少是「学会了点哪」——不分开就说不清。报告里写「动作准确率从 50%
+    提到 X%」，读的人会以为是空间能力提升，实际可能大半是 JSON 格式。
+
+    解析器有兜底（能从畸形 JSON 里抠出坐标），所以**合规率低不等于
+    分数低**——这两件事必须分别报。
+    """
+    try:
+        payload = json.loads((raw or "").strip())
+    except (json.JSONDecodeError, TypeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("action") not in ALLOWED_ACTIONS:
+        return False
+    return isinstance(payload.get("x"), int) and isinstance(payload.get("y"), int)
+
 
 @dataclass
 class Prediction:
@@ -79,6 +109,9 @@ class Prediction:
     pred_action: str = ""
     pred_xy: list = field(default_factory=list)
     action_ok: bool = False
+    #: 输出是否合规：能解析成 JSON、动作在允许集合内、带 x/y 两个整数。
+    #: **与 action_ok 分开记**，理由见 summarize 的说明。
+    format_ok: bool = False
     distance: float = -1.0
     error: str = ""
     latency_ms: float = 0.0
@@ -185,6 +218,7 @@ def evaluate(
                         record.pred_xy = [point.x, point.y]
                         record.distance = round(math.dist(record.truth_xy, record.pred_xy), 2)
                     record.action_ok = action == row["action"]
+                    record.format_ok = format_compliant(raw)
                 except Exception as exc:  # noqa: BLE001 —— 单样本失败不中断整档
                     record.error = f"{type(exc).__name__}: {exc}"[:200]
                 record.latency_ms = round((time.perf_counter() - started) * 1000, 1)
@@ -317,6 +351,9 @@ def summarize(path: Path, radii: tuple = DEFAULT_RADII) -> dict:
         "errors": len(rows) - len(valid),
         "no_coords": len(valid) - len(with_xy),
         "action_acc": (sum(r["action_ok"] for r in valid) / len(valid)) if valid else 0.0,
+        "format_acc": (sum(r.get("format_ok", False) for r in valid) / len(valid))
+        if valid
+        else 0.0,
         "median_distance": distances[len(distances) // 2] if distances else -1.0,
         "joint": {},
         "by_action": {},
@@ -353,6 +390,7 @@ def print_summary(stats: dict) -> None:
     print(f"汇总 {stats['tag']}")
     print("=" * 70)
     print(f"  样本 {stats['total']}    调用失败 {stats['errors']}    没给坐标 {stats['no_coords']}")
+    print(f"  **输出格式合规率 {stats['format_acc']:.1%}**（合法 JSON + 动作在集合内 + 整数 x/y）")
     print(f"  **动作类型准确率 {stats['action_acc']:.1%}**")
     print(f"  坐标误差中位数   {stats['median_distance']:.1f}（归一化 1000 空间）")
     print("  联合命中（动作类型对 且 坐标在半径内）：")
@@ -397,12 +435,18 @@ def main() -> int:
             print("对比")
             print("=" * 70)
             rows = [summarize(p) for p in files]
-            print(f"  {'档':<24}{'类型准确率':>12}{'误差中位数':>12}{'联合@50':>10}")
+            print(
+                f"  {'档':<20}{'格式合规':>10}{'类型准确率':>12}{'误差中位数':>12}{'联合@50':>10}"
+            )
             for r in rows:
                 print(
-                    f"  {r['tag']:<24}{r['action_acc']:>12.1%}"
+                    f"  {r['tag']:<20}{r.get('format_acc', 0):>10.1%}"
+                    f"{r['action_acc']:>12.1%}"
                     f"{r['median_distance']:>12.1f}{r['joint'].get('50', 0):>10.1%}"
                 )
+            print()
+            print("  **格式合规与类型准确率要分开看。** 微调涨的那部分里，")
+            print("  有多少是「学会了格式」、多少是「学会了点哪」，只有这两列能分辨。")
         return 0
 
     if not args.provider and not args.local:
