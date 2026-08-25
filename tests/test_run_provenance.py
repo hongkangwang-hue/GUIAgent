@@ -24,19 +24,25 @@ import pytest
 from scripts.run_basic_tasks import _screen_info, build_parser
 
 
-class Args:
-    execute = True
-    repeats = 5
-    only = ""
-    tag = "lora"
-    executor_template = "executor_v0"
+def make_args(**overrides):
+    """**从真实 parser 构造，不手搓桩。**
+
+    手搓的 `Args` 类会随 parser 长出新参数而漏字段——加
+    `--allowed-actions` 那次就漏了，三条测试一起变红，而它们本该只关心
+    自己那一项。从 parser 出发，新参数自动带上默认值。
+    """
+    args = build_parser().parse_args([])
+    for key, value in overrides.items():
+        setattr(args, key, value)
+    return args
 
 
 class TestArchiveRecordsProvenance:
     def _payload(self) -> dict:
         from scripts.run_basic_tasks import archive_payload
 
-        return json.loads(archive_payload([], Args(), "离线 / 本地", offline=True, partial=False))
+        args = make_args(execute=True, repeats=5, tag="lora", executor_template="executor_v0")
+        return json.loads(archive_payload([], args, "离线 / 本地", offline=True, partial=False))
 
     def test_记下用了哪份提示词模板(self):
         assert self._payload()["executor_template"] == "executor_v0"
@@ -110,3 +116,25 @@ class TestTemplateFlag:
             assert (
                 build_parser().parse_args(["--executor-template", name]).executor_template == name
             )
+
+
+class TestAllowedActionsProvenance:
+    """`--allowed-actions` 与 `executor_template`、`screen` 同一条护栏。"""
+
+    def test_动作集进存档(self):
+        import json
+
+        from scripts.run_basic_tasks import archive_payload
+
+        args = make_args(allowed_actions="left_click, mouse_move")
+        payload = json.loads(archive_payload([], args, "离线", offline=True, partial=False))
+        assert payload["allowed_actions"] == ["left_click", "mouse_move"]
+
+    def test_留空时存档记的是空列表而不是缺字段(self):
+        """**「没限制」要能看出来，不能靠字段缺失来表达。**"""
+        import json
+
+        from scripts.run_basic_tasks import archive_payload
+
+        payload = json.loads(archive_payload([], make_args(), "在线", offline=False, partial=False))
+        assert payload["allowed_actions"] == []

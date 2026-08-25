@@ -55,6 +55,22 @@ class SessionConfig:
     planner_template: str = "planner_v1"
     executor_template: str = "executor_v1"
 
+    #: **这个模型真的会哪些动作。** 空表示不限制（全部 CORE_ACTIONS）。
+    #:
+    #: 2026-08-25 查出的结构性错位：微调模型的训练集里 `type` / `key`
+    #: 各 0 条（ScreenAgent 的键盘动作因不带坐标被整批过滤），而提示词
+    #: 照样告诉它「你可以 type」。五个基础任务里四个需要打字，模型
+    #: **连掷骰子的机会都没有**——25 轮跑完只看到一片 0/5，系统里没有
+    #: 任何一处发现原因。
+    #:
+    #: 填上之后，执行器提示词与**规划器提示词**同时收窄。收窄规划器
+    #: 是关键：否则它照样拆出「输入 Microsoft Edge」这种执行器做不到的
+    #: 步骤，然后整轮卡在那里烧完 max_steps。
+    #:
+    #: 微调版 3B 应填 ("left_click", "double_click", "right_click",
+    #: "mouse_move")；在线 8B 留空。
+    allowed_actions: tuple[str, ...] = ()
+
     #: 拆解时给不给模型看当前屏幕
     plan_with_screenshot: bool = True
 
@@ -101,6 +117,9 @@ class SessionConfig:
             "plan_with_screenshot": self.plan_with_screenshot,
             "space_name": self.space_name,
             "image_size": list(self.image_size),
+            # **进轨迹存档。** 动作集是能左右结论的变量,不记下来事后
+            # 分不清「它没变」和「它变了但没人看见」。
+            "allowed_actions": list(self.allowed_actions),
             "coordinate_space": list(self.coordinate_space),
             "max_iterations": self.loop.max_iterations,
             "cost_limit_cny": self.loop.cost_limit_cny,
@@ -260,7 +279,7 @@ class Session:
         # 模型要按哪把尺子作答，就告诉它那把尺子
         width, height = self.config.coordinate_space
         self.backend.system_prompt = self.executor_template.render_system(
-            width=width, height=height
+            width=width, height=height, allowed_actions=self.config.allowed_actions or None
         )
         self.backend.few_shot = self.executor_template.few_shot_pairs()
         self.backend.user_template = self.executor_template.user_template
@@ -339,6 +358,7 @@ class Session:
             self.backend,
             template=self.planner_template,
             with_screenshot=self.config.plan_with_screenshot,
+            allowed_actions=self.config.allowed_actions,
         )
         screenshot = self.capturer.capture(fresh=True) if self.config.plan_with_screenshot else None
 

@@ -43,6 +43,29 @@ logger = logging.getLogger(__name__)
 #: 子任务数量上限。M2「明确不做」第 6 条：不做复杂任务（超过 8 步 / 跨应用）
 MAX_SUBTASKS = 8
 
+#: 给规划器加的硬约束段，`allowed_actions` 非空时追加到系统提示末尾。
+#:
+#: 2026-08-25 实测：规划器把「打开浏览器」拆成
+#: 「点开始按钮 → 输入 Microsoft Edge → 按回车」，而微调后的执行器不会
+#: `type` 也不会 `key`——后两步做不到，整轮卡在那里烧完 max_steps。
+#: 而这个任务本可以一次点击完成（点任务栏上的 Edge 图标）。
+#:
+#: **是计划本身要求了执行器做不到的事。** 光收窄执行器的提示词没用：
+#: 执行器面对一个「输入 Microsoft Edge」的子任务，无论提示词怎么写都做不了。
+#: 写成模块级常量而不是内联字符串，是为了让测试能逐字断言它出现在提示词里。
+CONSTRAINT_LINES = (
+    "",
+    "## 硬约束：执行器只会这几个动作",
+    "",
+    "{actions}",
+    "",
+    "**拆出来的每一步都必须能用上面这些动作完成。**",
+    "做不到的事要换一条路走——例如「打开浏览器」不要拆成",
+    "「点开始 → 输入名字 → 回车」，而应拆成「点击任务栏上的浏览器图标」。",
+    "确实没有可行路径时，宁可给出一个更短的计划，也不要写下执行器做不到的",
+    "步骤：那会让整轮卡在那一步上，直到步数耗尽。",
+)
+
 #: 提示"这条塞了不止一件事"的连词。
 #:
 #: 这是粒度检查里最有效的一条：中文里复合动作几乎总是被这些词连起来的，
@@ -240,10 +263,21 @@ class Planner:
         template: PromptTemplate | None = None,
         max_subtasks: int = MAX_SUBTASKS,
         with_screenshot: bool = True,
+        allowed_actions: tuple[str, ...] = (),
     ) -> None:
         self.backend = backend
         self.template = template or load_template("planner_v1")
         self.max_subtasks = max_subtasks
+        #: 执行器真的会哪些动作。**收窄规划器比收窄执行器更要紧。**
+        #:
+        #: 2026-08-25 实测：规划器把「打开浏览器」拆成
+        #: 「点开始按钮 → 输入 Microsoft Edge → 按回车」,而微调后的执行器
+        #: 不会 `type` 也不会 `key`——后两步做不到,整轮卡在那里烧完
+        #: max_steps。而这个任务本可以一次点击完成(点任务栏上的 Edge 图标)。
+        #:
+        #: **是计划本身要求了执行器做不到的事**,系统里原来没有任何一处
+        #: 检查这件事。
+        self.allowed_actions = tuple(allowed_actions)
         #: 拆解时要不要给模型看当前屏幕。
         #:
         #: 看得见更好——"打开记事本"这个指令，在记事本已经开着的情况下
@@ -258,7 +292,13 @@ class Planner:
         if not instruction or not instruction.strip():
             raise PlanError("指令为空")
 
-        system = self.template.render_system(width=0, height=0)
+        system = self.template.render_system(
+            width=0, height=0, allowed_actions=self.allowed_actions or None
+        )
+        if self.allowed_actions:
+            system += "\n" + "\n".join(CONSTRAINT_LINES).format(
+                actions=", ".join(f"`{name}`" for name in sorted(self.allowed_actions))
+            )
         user = self.template.render_user(instruction=instruction.strip())
 
         start = time.perf_counter()

@@ -37,6 +37,7 @@ M2 设计思路里那句话说得很直白：
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -81,14 +82,21 @@ class PromptTemplate:
     features: list[str] = field(default_factory=list)
     source_path: str = ""
 
-    def render_system(self, **kwargs: Any) -> str:
+    def render_system(self, allowed_actions: Sequence[str] | None = None, **kwargs: Any) -> str:
         """渲染系统提示。
 
         ``{action_reference}`` 是保留占位符，自动注入由 `ACTION_SPECS`
         生成的动作清单——见模块文档"不能手写"那一节。
+
+        ``allowed_actions`` 限定只列这个模型真的会的动作，
+        理由见 `render_action_reference`。
         """
-        values = {"action_reference": render_action_reference(), **kwargs}
-        return _safe_format(self.system, values, where=f"{self.name}.system")
+        values = {
+            "action_reference": render_action_reference(allowed=allowed_actions),
+            **kwargs,
+        }
+        text = _safe_format(self.system, values, where=f"{self.name}.system")
+        return _drop_rules_naming(text, allowed_actions)
 
     def render_user(self, **kwargs: Any) -> str:
         return _safe_format(self.user_template, kwargs, where=f"{self.name}.user_template")
@@ -132,13 +140,70 @@ def _safe_format(template: str, values: dict, where: str) -> str:
 # ---------------------------------------------------------------------- #
 
 
-def render_action_reference(only_core: bool = True) -> str:
+def _drop_rules_naming(text: str, allowed: Sequence[str] | None) -> str:
+    """删掉正文里点名了**不可用动作**的整行规则。
+
+    ## 为什么光过滤动作清单不够
+
+    模板的「使用规则」那几条是手写的，里面直接点了动作名：
+
+        3. **中文输入用 `type`。** 它内部走剪贴板，可以正确输入中文。
+
+    `{action_reference}` 过滤之后 `type` 不在动作清单里了，**这一行还在**——
+    于是同一份提示词一边说「你只有这四个动作」，一边说「中文输入用 type」。
+    这正是本项目一直在防的那种自相矛盾（见模块文档「不能手写」那一节）。
+
+    2026-08-25 写 `allowed_actions` 时，是测试先撞出来的。
+
+    ## 只删整行，不改写
+
+    改写留下的半句话比整行删掉更危险——它会变成一句无主语的指令。
+    删掉之后规则编号会出现空档（1、2、4），这是有意的：**看得出少了一条，
+    比看不出强。**
+    """
+    if not allowed:
+        return text
+    excluded = {t.value for t in CORE_ACTIONS} - {str(name) for name in allowed}
+    if not excluded:
+        return text
+    marks = tuple(f"`{name}`" for name in excluded)
+    kept = [line for line in text.splitlines() if not any(m in line for m in marks)]
+    return chr(10).join(kept)
+
+
+def render_action_reference(only_core: bool = True, allowed: Sequence[str] | None = None) -> str:
     """从 `ACTION_SPECS` 生成给模型看的动作说明。
 
     与 `control.actions.to_tool_schemas` 同源，因此动作参数一改，提示词
     自动跟着变——不会出现"提示词说有这个参数、校验说没有"的错位。
+
+    ## `allowed`：只列这个模型真的会的动作
+
+    2026-08-25 查出的一处结构性错位：微调模型的训练集里
+    `type` / `key` / `done` **各 0 条**（ScreenAgent 的键盘动作因不带坐标
+    被整批过滤），而提示词照样告诉它「你可以 `type`」。
+
+    后果是五个基础任务里四个需要打字，模型**连掷骰子的机会都没有**——
+    而系统里没有任何一处发现这件事，25 轮跑完只看到一片 0/5。
+
+    给 `allowed` 之后，提示词只列它真的会的动作。**这不会让模型变强，
+    但会让它和规划器停止假装能做做不到的事。**
+
+    传空或 None 表示不限制（默认行为，与从前一致）。
     """
     types = sorted(CORE_ACTIONS, key=lambda t: t.value) if only_core else list(ActionType)
+    if allowed:
+        wanted = {str(name) for name in allowed}
+        kept = [t for t in types if t.value in wanted]
+        unknown = wanted - {t.value for t in types}
+        if unknown:
+            # **不静默忽略。** 拼错一个动作名就等于悄悄放宽了限制，
+            # 而那正是这个参数要防的事。
+            raise PromptError(
+                f"allowed 里有不存在的动作：{sorted(unknown)}；"
+                f"可用的是 {sorted(t.value for t in types)}"
+            )
+        types = kept
 
     lines: list[str] = []
     for action_type in types:
