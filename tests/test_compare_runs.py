@@ -416,3 +416,50 @@ class TestExcludeRound:
         assert summarize(records) == "1/2 = 50%"
         record["excluded"] = False
         assert summarize(records) == "2/3 = 67%"
+
+
+class TestSkipWholeRun:
+    """整份作废的运行要能整份剔掉。
+
+    离线-基座组跑了两次：第一次因客户端超时 90s 而生成需要 140s 全废
+    （25 轮里 15 轮连规划都没出来），第二次才是正式数据。两次 tag 相同，
+    不剔的话合成 50 轮，而那 15 个「任务拆解失败」全部来自工具缺陷。
+
+    **这与 `excluded` 是两回事**：后者是逐轮的人为干预，这里是整次运行
+    的环境无效。存档都留着，只是不进对比。
+    """
+
+    def test_按文件名剔掉整份(self, tmp_path, capsys):
+        bad = tmp_path / "20260824-223451-all-exec-offline-base.json"
+        good = tmp_path / "20260825-010831-all-exec-offline-base.json"
+        for path, verified in ((bad, False), (good, True)):
+            payload = {"tag": "base", "offline": True, "records": [_round(verified=verified)]}
+            path.write_text(json.dumps(payload, ensure_ascii=False), "utf-8")
+
+        from scripts.compare_runs import load_archives
+
+        arms = build_arms(load_archives(tmp_path), None, skip=["20260824-223451"])
+        assert len(arms) == 1
+        assert len(arms[0].records) == 1
+        assert arms[0].rate() == 1.0  # 只剩好的那份
+        assert "排除" in capsys.readouterr().err
+
+    def test_不给_skip_时全都算(self, tmp_path):
+        for name in ("a-base.json", "b-base.json"):
+            payload = {"tag": "base", "offline": True, "records": [_round()]}
+            (tmp_path / name).write_text(json.dumps(payload, ensure_ascii=False), "utf-8")
+
+        from scripts.compare_runs import load_archives
+
+        arms = build_arms(load_archives(tmp_path), None)
+        assert len(arms[0].records) == 2
+
+    def test_排除会打到_stderr_而不是悄悄丢掉(self, tmp_path, capsys):
+        """**少了一份数据必须说出来。** 悄悄丢掉和算错一样危险。"""
+        (tmp_path / "x-base.json").write_text(
+            json.dumps({"tag": "base", "records": [_round()]}, ensure_ascii=False), "utf-8"
+        )
+        from scripts.compare_runs import load_archives
+
+        build_arms(load_archives(tmp_path), None, skip=["x-base"])
+        assert "x-base.json" in capsys.readouterr().err

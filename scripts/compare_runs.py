@@ -125,7 +125,9 @@ def load_archives(directory: Path) -> list[tuple[Path, dict]]:
 
 
 def build_arms(
-    archives: list[tuple[Path, dict]], mapping: dict[str, list[str]] | None
+    archives: list[tuple[Path, dict]],
+    mapping: dict[str, list[str]] | None,
+    skip: list[str] | None = None,
 ) -> list[Arm]:
     """把存档按 tag 归入各组。
 
@@ -140,6 +142,18 @@ def build_arms(
     by_tag: dict[str, list[tuple[Path, dict]]] = defaultdict(list)
     untagged: list[str] = []
     for path, archive in archives:
+        # **整份作废的运行要能整份剔掉。**
+        #
+        # 2026-08-24 的离线-基座组跑了两次，第一次因为客户端超时 90s 而
+        # 生成需要 140s 全废（25 轮里 15 轮连规划都没出来）。两次的 tag
+        # 都是 `base`，按 tag 合并就成了 50 轮，而那 15 个「任务拆解失败」
+        # 全部来自工具缺陷，不是模型能力——**混进去整张表就不可信了**。
+        #
+        # 这不是 `excluded`（那是逐轮的人为干预），是整次运行的环境无效。
+        # 存档留着当缺陷证据，只是不进对比。
+        if skip and any(pattern in path.name for pattern in skip):
+            print(f"[排除] {path.name}", file=sys.stderr)
+            continue
         tag = archive.get("tag", "")
         if not tag:
             untagged.append(path.name)
@@ -357,6 +371,13 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="名字=tag1,tag2",
         help="把哪些 tag 归为一组。可重复。不给时每个 tag 自成一组",
     )
+    parser.add_argument(
+        "--skip",
+        action="append",
+        default=[],
+        metavar="文件名片段",
+        help="整份排除某次运行（按文件名匹配）。用于因工具缺陷而整体作废的运行。可重复",
+    )
     parser.add_argument("--markdown", action="store_true", help="输出 markdown 表格")
     return parser
 
@@ -371,7 +392,7 @@ def main() -> int:
     if not archives:
         raise SystemExit(f"{args.runs} 下没有存档")
 
-    arms = build_arms(archives, parse_arms(args.arm))
+    arms = build_arms(archives, parse_arms(args.arm), skip=args.skip)
     if not arms:
         raise SystemExit("没有匹配到任何一组。用 --arm 指定 tag，或先跑一次带 --tag 的实测")
     render(arms, markdown=args.markdown)
