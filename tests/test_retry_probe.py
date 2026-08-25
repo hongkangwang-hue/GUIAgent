@@ -206,3 +206,84 @@ class TestCli:
         from scripts.probe_retries import build_parser
 
         assert build_parser().parse_args([]).include_text is False
+
+
+class TestScreenConsistency:
+    """报告 §7.1 声称「三组的差别只有一处」，**但从没验证过屏幕分辨率**。
+
+    存档 `docs/m2-runs/*.json` 里没有这一项，只有轨迹的 `meta.json` 记了
+    `environment.resolution` 与 DPI 缩放。而 §9 已证明分辨率值 2 倍坐标
+    误差——**跨分辨率的成功率不可直接比较，而这在存档里完全看不出来**。
+    """
+
+    def _run(self, resolution="2560x1600", scale=1.5, steps=1):
+        env = {"resolution": resolution, "scale_factor": scale} if resolution else {}
+        return {"env": env, "steps": steps, "distinct_attempts": 1, "detail": []}
+
+    def test_全部一致时判为一致(self):
+        assert summarize([self._run(), self._run()])["screen_consistent"]
+
+    def test_分辨率不同判为不一致(self):
+        runs = [self._run("2560x1600"), self._run("1024x768")]
+        assert not summarize(runs)["screen_consistent"]
+
+    def test_同分辨率不同_DPI_也判为不一致(self):
+        """**2560×1600 @150% 和 @100% 下，按钮在截图里差 1.5 倍。**
+
+        只比分辨率不比缩放，说不清模型看到的元素有多大。
+        """
+        runs = [self._run(scale=1.5), self._run(scale=1.0)]
+        assert not summarize(runs)["screen_consistent"]
+
+    def test_未记录不算作不一致(self):
+        """**「缺数据」和「不一样」是两回事。**
+
+        早期轨迹没有 `environment` 段。把它算成一种屏幕会误报，
+        而误报会让真的不一致被当成噪声忽略掉。
+        """
+        runs = [self._run(), self._run(resolution=None)]
+        stats = summarize(runs)
+        assert stats["screen_consistent"]
+        assert stats["screens_unknown"] == 1
+
+    def test_全部未记录时不谎报一致(self):
+        """一条都没记录时，`screen_consistent` 为真只是因为无从判断——
+
+        `screens_unknown` 必须同时把这件事说出来，否则读的人会以为验过了。
+        """
+        stats = summarize([self._run(resolution=None) for _ in range(3)])
+        assert stats["screens_unknown"] == 3
+
+    def test_从_meta_读环境(self, tmp_path):
+        from scripts.probe_retries import environment_of
+
+        traj = tmp_path / "traj-e"
+        traj.mkdir()
+        traj.joinpath("meta.json").write_text(
+            json.dumps(
+                {
+                    "backend": "selfhost",
+                    "model": "Qwen/Qwen2.5-VL-3B-Instruct",
+                    "environment": {
+                        "resolution": "2560x1600",
+                        "dpi": {"scale_factor": 1.5},
+                        "capture_engine": "dxcam",
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        env = environment_of(traj)
+        assert env["resolution"] == "2560x1600"
+        assert env["scale_factor"] == 1.5
+        assert env["backend"] == "selfhost"
+
+    def test_meta_缺失或损坏时不崩(self, tmp_path):
+        from scripts.probe_retries import environment_of
+
+        traj = tmp_path / "traj-bad"
+        traj.mkdir()
+        assert environment_of(traj) == {}
+        traj.joinpath("meta.json").write_text('{"environment":', encoding="utf-8")
+        assert environment_of(traj) == {}

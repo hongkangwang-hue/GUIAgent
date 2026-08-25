@@ -14,7 +14,18 @@ M4 任务 2 要做「错误检测与自动重试」。但重试能不能涨，�
 那么 §10 里那个「27.5% 重试 6 次 → 85.5%」的粗算**一分都不成立**，
 而 M4 任务 2 的设计要完全不同（要引入多样性，而不只是加重试次数）。
 
-**这个探针只回答这一个问题。**
+## 第二个用途：查各轮跑在什么屏幕上
+
+报告 §7.1 声称「三组的差别只有一处」，列了模型、部署方式、数据边界——
+**但从没验证过屏幕分辨率是否一致**。而 `docs/m2-runs/*.json` 存档里
+**没有这一项**，只有轨迹的 `meta.json` 记了 `environment.resolution`
+与 DPI 缩放。
+
+§9 刚证明分辨率值 2 倍坐标误差。**若 A/B/C 三组跑在不同分辨率上，
+§7 的比较就不是单变量的**，而这一点在存档里完全看不出来。
+
+所以探针顺带把每条轨迹的分辨率、DPI 缩放、后端、模型一起导出。
+出现两种以上分辨率会显式报警。
 
 ## 为什么不直接把轨迹拷过来
 
@@ -130,6 +141,33 @@ def analyse_subtask(steps: list[dict], include_text: bool) -> dict:
     return row
 
 
+def environment_of(traj_dir: Path) -> dict:
+    """轨迹跑在什么屏幕上。**存档里没有这一项，只有这里有。**
+
+    分辨率与 DPI 缩放一起取：2560×1600 @150% 和 1024×768 @100% 下，
+    同一个按钮在截图里的像素尺寸差 2.5 倍——**只记分辨率不记缩放，
+    仍然说不清模型看到的元素有多大**。
+    """
+    path = traj_dir / "meta.json"
+    if not path.exists():
+        return {}
+    try:
+        meta = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    env = meta.get("environment") or {}
+    dpi = env.get("dpi") or {}
+    return {
+        "resolution": env.get("resolution", ""),
+        "scale_factor": dpi.get("scale_factor"),
+        "capture_engine": env.get("capture_engine", ""),
+        "backend": meta.get("backend", ""),
+        "model": meta.get("model", ""),
+        "started_at": meta.get("started_at", ""),
+        "status": meta.get("status", ""),
+    }
+
+
 def analyse(traj_dir: Path, include_text: bool) -> dict | None:
     steps = load_steps(traj_dir)
     if not steps:
@@ -144,6 +182,7 @@ def analyse(traj_dir: Path, include_text: bool) -> dict | None:
     distinct = sum(s["distinct_attempts"] for s in subtasks)
     return {
         "trajectory_id": traj_dir.name,
+        "env": environment_of(traj_dir),
         "steps": total,
         "subtasks": len(subtasks),
         "distinct_attempts": distinct,
@@ -157,8 +196,28 @@ def summarize(runs: list[dict]) -> dict:
     steps = sum(r["steps"] for r in runs)
     distinct = sum(r["distinct_attempts"] for r in runs)
     multi = [s for r in runs for s in r["detail"] if s["steps"] > 1]
+
+    def screen_of(run: dict) -> str:
+        """屏幕设置的标签。**「没记录」要和「不一样」分开。**
+
+        早期轨迹的 meta.json 没有 `environment` 段。把它算成一种「不同的
+        屏幕」会误报，而误报会让真的不一致被当成噪声忽略掉。
+        """
+        env = run.get("env") or {}
+        if not env.get("resolution"):
+            return "未记录"
+        scale = env.get("scale_factor")
+        return f"{env['resolution']} @{scale}x" if scale else env["resolution"]
+
+    screens = Counter(screen_of(r) for r in runs)
+    known = {k: v for k, v in screens.items() if k != "未记录"}
     return {
         "trajectories": len(runs),
+        "screens": dict(screens),
+        # **多于一种就意味着 §7 的比较不是单变量的。**
+        # 「未记录」不参与判定——那是缺数据，不是不一致。
+        "screen_consistent": len(known) <= 1,
+        "screens_unknown": screens.get("未记录", 0),
         "steps": steps,
         "distinct_attempts": distinct,
         "repeat_rate": round(1 - distinct / steps, 4) if steps else None,
@@ -215,6 +274,17 @@ def main() -> int:
         f"  有重试的子任务 {stats['subtasks_with_retries']}    "
         f"其中**每次尝试都一样**的 {stats['subtasks_where_every_retry_identical']}"
     )
+    print()
+    print("  屏幕：")
+    for screen, count in stats["screens"].items():
+        print(f"    {screen:<24} {count} 条轨迹")
+    if stats["screens_unknown"]:
+        print(f"    （其中 {stats['screens_unknown']} 条的 meta.json 没有 environment 段）")
+    if not stats["screen_consistent"]:
+        print()
+        print("  ⚠️ **出现了不止一种屏幕设置。** 报告 §7.1 声称「三组的差别只有")
+        print("     一处」，那个说法在这批数据上不成立——§9 已证明分辨率值 2 倍")
+        print("     坐标误差，跨分辨率的成功率不可直接比较。")
     print()
     print("  重复率高 → 重试只是把同一个错误做 N 遍，M4 任务 2 必须引入")
     print("            多样性（换温度 / 换提示 / 换策略），加次数没用。")
