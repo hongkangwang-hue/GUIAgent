@@ -100,6 +100,19 @@ def format_compliant(raw: str) -> bool:
     return isinstance(payload.get("x"), int) and isinstance(payload.get("y"), int)
 
 
+def parroted(raw: str, few_shot: list) -> bool:
+    """输出是否逐字照抄了某条 few-shot 示例。
+
+    只做**精确匹配**（去空白后），不做模糊匹配：模糊匹配会把「学到了
+    示例的格式」误判成「抄了示例的答案」，而前者正是 few-shot 该起的作用。
+    宁可漏报，不可误报——这个数字要进报告。
+    """
+    if not few_shot:
+        return False
+    answer = (raw or "").strip()
+    return any(answer == str(e.get("output", "")).strip() for e in few_shot)
+
+
 @dataclass
 class Prediction:
     sample_id: str
@@ -116,6 +129,13 @@ class Prediction:
     error: str = ""
     latency_ms: float = 0.0
     raw: str = ""
+    #: 输出是否**逐字照抄了某条 few-shot 示例**。
+    #:
+    #: 2026-08-24 实测撞见的：3B 会把示例的答案原样吐出来，坐标是示例里的
+    #: 常数。这种输出**格式 100% 合规、动作类型可能也对**，只有坐标是错的
+    #: ——`format_ok` 和 `action_ok` 一个都拦不住它。
+    #: 提示词消融必须单独量这一项，否则 few-shot 看起来只有好处。
+    parroted: bool = False
 
 
 def load_val(path: Path) -> list[dict]:
@@ -173,9 +193,29 @@ def evaluate(
     limit: int = 0,
     resume: bool = True,
     load_4bit: bool = False,
+    prompt: str = "",
 ) -> Path:
-    """跑一档评测，逐条追加到 JSONL。"""
+    """跑一档评测，逐条追加到 JSONL。
+
+    ``prompt`` 给模板名（如 `executor_v1`）时用那套提示词与 few-shot；
+    留空则用训练时的 `SYSTEM_PROMPT`（微调前后对比的默认口径）。
+    提示词消融靠这个参数切换三档。
+    """
     from finetune.train_lora import SYSTEM_PROMPT
+
+    few_shot: list = []
+    if prompt:
+        from agent.prompts import load_template
+        from agent.session import SessionConfig
+
+        template = load_template(prompt)
+        # **宽高用坐标系尺寸，不是图片尺寸。** 与 Agent 运行时同一口径，
+        # 否则消融测的提示词和实际跑任务用的不是同一份。
+        width, height = SessionConfig().coordinate_space
+        system = template.render_system(width=width, height=height)
+        few_shot = template.few_shot_pairs()
+    else:
+        system = SYSTEM_PROMPT
 
     RESULT_DIR.mkdir(parents=True, exist_ok=True)
     out = RESULT_DIR / f"{tag}.jsonl"
@@ -187,7 +227,7 @@ def evaluate(
         todo = todo[:limit]
 
     predict, closer, label = _build_predictor(
-        provider, model, local_model, adapter, SYSTEM_PROMPT, load_4bit
+        provider, model, local_model, adapter, system, load_4bit, few_shot
     )
 
     print("=" * 70)
@@ -195,6 +235,7 @@ def evaluate(
     print("=" * 70)
     print(f"  标签      {tag}")
     print(f"  模型      {label}")
+    print(f"  提示词    {prompt or '训练时的 SYSTEM_PROMPT'}    few-shot {len(few_shot)} 条")
     print(f"  验证集    {val_path}    共 {len(rows)}，已完成 {len(done)}，本次 {len(todo)}")
     print(f"  结果      {out}（逐条追加，可断点续跑）")
     print()
@@ -222,6 +263,7 @@ def evaluate(
                         record.distance = round(math.dist(record.truth_xy, record.pred_xy), 2)
                     record.action_ok = action == row["action"]
                     record.format_ok = format_compliant(raw)
+                    record.parroted = parroted(raw, few_shot)
                 except Exception as exc:  # noqa: BLE001 —— 单样本失败不中断整档
                     record.error = f"{type(exc).__name__}: {exc}"[:200]
                 record.latency_ms = round((time.perf_counter() - started) * 1000, 1)
@@ -250,6 +292,7 @@ def _build_predictor(
     adapter: str,
     system: str,
     load_4bit: bool = False,
+    few_shot: list | None = None,
 ):
     """返回 (predict, close, label)。
 
@@ -306,14 +349,32 @@ def _build_predictor(
             image = Image.open(row["image"]).convert("RGB")
             messages = [
                 {"role": "system", "content": [{"type": "text", "text": system}]},
+            ]
+            # few-shot 的 input 是截图的**文字描述**而非真图（见
+            # executor_v1.yaml 的说明），所以这里全是纯文本，不进 images。
+            # 顺序必须是 系统 → few-shot → 当前样本，与 Agent 运行时一致。
+            for example in few_shot or []:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": str(example.get("input", ""))}],
+                    }
+                )
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": str(example.get("output", ""))}],
+                    }
+                )
+            messages.append(
                 {
                     "role": "user",
                     "content": [
                         {"type": "image", "image": image},
                         {"type": "text", "text": row["instruction"]},
                     ],
-                },
-            ]
+                }
+            )
             text = processor.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
             )
@@ -334,7 +395,9 @@ def _build_predictor(
 
     load_dotenv_if_present()
     config = resolve(provider or "dashscope", model=model or None)
-    backend = OpenAICompatBackend(config=config, system_prompt=system)
+    backend = OpenAICompatBackend(
+        config=config, system_prompt=system, few_shot=list(few_shot or [])
+    )
 
     def predict(row: dict):
         intent = backend.predict_action(row["instruction"], _screenshot_of(row))
@@ -378,6 +441,12 @@ def summarize(path: Path, radii: tuple = DEFAULT_RADII) -> dict:
         if valid
         else 0.0,
         "median_distance": distances[len(distances) // 2] if distances else -1.0,
+        # **照抄率要单独报。** 逐字抄 few-shot 的输出格式 100% 合规、
+        # 动作类型也可能对，只有坐标是示例里的常数——format_acc 和
+        # action_acc 一个都拦不住它。不单独量，few-shot 看起来只有好处。
+        "parrot_rate": (sum(r.get("parroted", False) for r in valid) / len(valid))
+        if valid
+        else 0.0,
         "joint": {},
         "by_action": {},
         "median_latency_ms": 0.0,
@@ -416,6 +485,10 @@ def print_summary(stats: dict) -> None:
     print(f"  **输出格式合规率 {stats['format_acc']:.1%}**（合法 JSON + 动作在集合内 + 整数 x/y）")
     print(f"  **动作类型准确率 {stats['action_acc']:.1%}**")
     print(f"  坐标误差中位数   {stats['median_distance']:.1f}（归一化 1000 空间）")
+    parrot = stats.get("parrot_rate", 0.0)
+    if parrot:
+        print(f"  **逐字照抄 few-shot 示例 {parrot:.1%}** —— 这些输出格式合规、")
+        print("  坐标却是示例里的常数。格式与动作类型两个指标都拦不住它。")
     print("  联合命中（动作类型对 且 坐标在半径内）：")
     for radius, value in stats["joint"].items():
         print(f"    r={radius:<5}{value:>7.1%}")
@@ -438,6 +511,11 @@ def main() -> int:
     parser.add_argument("--tag", default="", help="这一档的名字，作为结果文件名")
     parser.add_argument("--provider", default="", help="走 API 后端，如 dashscope")
     parser.add_argument("--model", default="", help="覆盖平台默认模型")
+    parser.add_argument(
+        "--prompt",
+        default="",
+        help="提示词模板名（executor_v0 / v1 / v2）。留空用训练时的 SYSTEM_PROMPT",
+    )
     parser.add_argument("--local", default="", help="走本地模型，给 HF 模型名或路径")
     parser.add_argument("--adapter", default="", help="LoRA adapter 目录，微调后评测用")
     parser.add_argument(
@@ -492,6 +570,7 @@ def main() -> int:
         limit=args.limit,
         resume=not args.no_resume,
         load_4bit=args.load_4bit,
+        prompt=args.prompt,
     )
     print_summary(summarize(out))
     return 0
