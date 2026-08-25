@@ -128,11 +128,12 @@ def latency_breakdown(records: list) -> dict:
     return {k: round(v, 1) for k, v in total.items()}
 
 
-def main() -> int:
-    _console()
+def build_parser() -> argparse.ArgumentParser:
+    """抽成函数是为了让测试能检查参数表。
 
-    from llm.factory import add_backend_args, build_backend, describe, is_offline
-
+    与 `eval/action.py`、`serve_local_model.py` 同一条护栏：
+    `main()` 读了一个从没注册过的参数,要到跑起来才炸。
+    """
     parser = argparse.ArgumentParser(description="M2 基础任务批量执行与成功率统计")
     parser.add_argument("--execute", action="store_true", help="真正操作键鼠（默认演练）")
     parser.add_argument("--repeats", type=int, default=5, help="每个任务跑几次")
@@ -144,14 +145,31 @@ def main() -> int:
         default="",
         help="给这次跑起个名字，进存档文件名与 JSON。对比实验必填，例如 base / lora",
     )
+    parser.add_argument(
+        "--executor-template",
+        default="",
+        help="执行器提示词模板，留空用 SessionConfig 的默认值。**微调模型建议用 executor_v0（零样本）**："
+        "2026-08-25 查出离线组 64% 的动作是在逐字背诵 executor_v1 few-shot "
+        "示例里的坐标 (470, 750)，而微调模型格式合规已达 97.9%，不需要示例",
+    )
     # 在线/离线由这组参数切换：
     #   在线      --provider dashscope
     #   离线-基座 --provider local
     #   离线-微调 --provider local --adapter finetune/outputs/<run>/adapter
     # **同一个脚本、同一套任务、同一套提示词**，否则跑出来的差值里
     # 混进了脚本差异，就不是模型的差值了。
+    from llm.factory import add_backend_args
+
     add_backend_args(parser)
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> int:
+    _console()
+
+    from llm.factory import build_backend, describe, is_offline
+
+    args = build_parser().parse_args()
 
     import yaml
 
@@ -202,6 +220,11 @@ def main() -> int:
     capturer = ScreenCapturer()
     probe = capturer.capture(fresh=True)
     scaler = CoordinateScaler(probe.region)
+    # **留空时解析成 SessionConfig 的默认值，并写回 args。**
+    # 不写字面量默认值：那样 SessionConfig 改了默认、这里不跟着改，
+    # 存档记下的就不是实际用的那份模板——而这正是 §10.8 那个混淆的形态。
+    args.executor_template = args.executor_template or SessionConfig.executor_template
+
     space = SessionConfig().coordinate_space
     scaler.register("planner", *space)
     executor = ActionExecutor(scaler, space_name="planner", dry_run=not args.execute)
@@ -262,7 +285,10 @@ def main() -> int:
                 NativeGrounding(*space),
                 executor,
                 capturer,
-                config=SessionConfig(loop=LoopConfig(max_iterations=max_steps)),
+                config=SessionConfig(
+                    loop=LoopConfig(max_iterations=max_steps),
+                    executor_template=args.executor_template,
+                ),
             )
 
             started = time.perf_counter()
@@ -338,6 +364,29 @@ def main() -> int:
     return 0
 
 
+def _screen_info() -> dict:
+    """当前屏幕分辨率与 DPI 缩放。取不到就留空,不要猜。
+
+    分辨率与缩放**必须一起记**:1920x1080 @100% 和 @150% 下,同一个按钮
+    在截图里的像素尺寸差 1.5 倍。只记一个说不清模型看到的元素有多大。
+    """
+    try:
+        from perception.capture import ScreenCapturer
+
+        with ScreenCapturer() as cap:
+            shot = cap.capture()
+        info = {"resolution": f"{shot.width}x{shot.height}"}
+    except Exception:  # noqa: BLE001 —— 取不到屏幕信息不该让整轮跑不起来
+        info = {}
+    try:
+        from perception.dpi import describe as dpi_describe
+
+        info["dpi"] = dpi_describe()
+    except Exception:  # noqa: BLE001
+        pass
+    return info
+
+
 def archive_payload(
     records: list[RunRecord], args, backend_label: str, offline: bool, partial: bool
 ) -> str:
@@ -357,6 +406,14 @@ def archive_payload(
             "backend": backend_label,
             "offline": offline,
             "tag": args.tag,
+            # **提示词模板必须进存档。** 2026-08-25 查出离线组 64% 的动作是在
+            # 逐字背诵 `executor_v1` few-shot 示例里的坐标 (470, 750)。当时
+            # 存档里没记用了哪份模板,这个混淆是靠翻客机轨迹才发现的。
+            "executor_template": args.executor_template,
+            # **屏幕设置也必须进存档。** 同一天查出报告写错了客机分辨率
+            # (把宿主机的 2560x1600 当成了客机的),而 §9 已证明分辨率值
+            # 2 倍坐标误差——一个能左右结论的变量,存档里却查不到。
+            "screen": _screen_info(),
             # 跑完了没有。中断的存档不能当完整数据用。
             "partial": partial,
             "records": [asdict(r) for r in records],
