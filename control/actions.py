@@ -110,12 +110,14 @@ ACTION_SPECS: dict[ActionType, tuple[str, tuple[ParamSpec, ...]]] = {
         "在指定位置滚动鼠标滚轮",
         (
             *_XY,
+            ParamSpec("direction", "string", "滚动方向", enum=SCROLL_DIRECTIONS),
             ParamSpec(
-                "direction", "string", "滚动方向", enum=SCROLL_DIRECTIONS
-            ),
-            ParamSpec(
-                "amount", "integer", "滚动格数，通常 3 格约等于一屏的三分之一",
-                required=False, minimum=1, maximum=30,
+                "amount",
+                "integer",
+                "滚动格数，通常 3 格约等于一屏的三分之一",
+                required=False,
+                minimum=1,
+                maximum=30,
             ),
         ),
     ),
@@ -123,7 +125,8 @@ ACTION_SPECS: dict[ActionType, tuple[str, tuple[ParamSpec, ...]]] = {
         "按下组合键。单键直接写键名，组合键用加号连接",
         (
             ParamSpec(
-                "keys", "string",
+                "keys",
+                "string",
                 "键名或组合键，例如 'enter'、'ctrl+c'、'alt+f4'、'ctrl+shift+n'",
             ),
         ),
@@ -134,11 +137,7 @@ ACTION_SPECS: dict[ActionType, tuple[str, tuple[ParamSpec, ...]]] = {
     ),
     ActionType.WAIT: (
         "等待一段时间，用于让界面完成加载或动画",
-        (
-            ParamSpec(
-                "duration", "number", "等待秒数", minimum=0.1, maximum=10.0
-            ),
-        ),
+        (ParamSpec("duration", "number", "等待秒数", minimum=0.1, maximum=10.0),),
     ),
     ActionType.MIDDLE_CLICK: ("在指定位置单击鼠标中键", _XY),
     ActionType.TRIPLE_CLICK: ("在指定位置三击鼠标左键，通常用于选中整行", _XY),
@@ -217,6 +216,21 @@ class Action:
         """本动作是否涉及屏幕坐标——决定是否需要做越界检查与坐标转换。"""
         _, specs = ACTION_SPECS[self.type]
         return any(spec.name == "x" for spec in specs)
+
+    def with_type(self, action_type: ActionType | str) -> Action:
+        """换一个动作类型，其余字段照抄，返回**新对象**。
+
+        重试策略升级动作时用（`core/retry.py`）：同一个位置单击没反应，
+        改成双击。**只换类型不换坐标**——坐标是模型对目标位置的判断，
+        策略没有比它更好的信息；要改的是"用什么方式碰它"。
+
+        返回新对象而不是原地改：`StepRecord` 已经记下了改写前的
+        `action_model_coords`，原地改会让那份记录跟着变，事后就分不清
+        "模型自己选了双击"和"策略改的"。
+        """
+        import dataclasses
+
+        return dataclasses.replace(self, type=ActionType(action_type))
 
     def to_dict(self) -> dict:
         """只含本动作实际用到的参数，便于写进轨迹日志。"""

@@ -120,6 +120,11 @@ class SessionConfig:
             # **进轨迹存档。** 动作集是能左右结论的变量,不记下来事后
             # 分不清「它没变」和「它变了但没人看见」。
             "allowed_actions": list(self.allowed_actions),
+            # 重试升级的开关在 `LoopConfig` 上，**这里只是把它抄进存档**。
+            # 两处各存一份的话，一处改了另一处不跟着改，存档记的就不是
+            # 实际生效的那个值——这是本项目栽过两次的形态（提示词模板、
+            # 屏幕分辨率）。
+            "escalate_on_no_change": self.loop.escalate_on_no_change,
             "coordinate_space": list(self.coordinate_space),
             "max_iterations": self.loop.max_iterations,
             "cost_limit_cny": self.loop.cost_limit_cny,

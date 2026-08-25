@@ -41,6 +41,7 @@ from dataclasses import dataclass, field
 
 from control.actions import ActionValidationError
 from control.executor import ActionExecutor
+from core.retry import RetryPolicy
 from core.trajectory import LatencyBreakdown, StepRecord, TrajectoryWriter
 from grounding.base import GroundingBackend, GroundingResult
 from llm.base import ActionIntent, CostInfo, HistoryStep, LLMBackend, LLMBackendError
@@ -84,6 +85,18 @@ class LoopConfig:
 
     #: 每步是否落盘前后两帧。关掉能省磁盘，但 replay 就没图可放了
     save_frames: bool = True
+
+    #: 动作执行后屏幕没变化时，自动升级策略（单击 → 双击），
+    #: 并把"上一次点了没反应"回传给模型。大纲 W6 任务 2。
+    #:
+    #: **默认关闭。** 打开会改变行为，而 M2/M3 的全部实测都是在关闭下跑的
+    #: ——默认打开等于让那些复现命令悄悄跑出另一套结果。要用就显式开，
+    #: 这样 A/B 才做得成。
+    escalate_on_no_change: bool = False
+
+    #: 变化像素占比超过它算"屏幕动了"。见 `perception.change` 的模块文档
+    #: ——这个阈值是拍的，不是测的。
+    change_threshold: float = 0.01
 
     def __post_init__(self) -> None:
         if self.max_iterations < 1:
@@ -189,6 +202,9 @@ class AgentLoop:
         #: 策略是 M3 要做消融的变量，让它从外面进来，Loop 自己只保留一个
         #: 够用的默认实现（简单切片）。
         self.history_selector = history_selector
+        #: 重试策略。每个子任务开始时 reset——不重置的话，上个子任务在同一
+        #: 坐标上的尝试会让这个子任务的第一次点击就被升级。
+        self.retry_policy = RetryPolicy()
 
         #: 每步落盘后触发，CLI 用它刷新实时面板。
         #: 回调抛异常不影响任务——显示层的问题不该把正在执行的任务带崩
@@ -203,6 +219,7 @@ class AgentLoop:
         模型能跑起来的前提，见 M2 设计思路"两条针对开源模型的必要设计"。
         """
         result = LoopResult()
+        self.retry_policy.reset()
         logger.info("子任务 #%d 开始：%s", subtask_id, subtask)
 
         for iteration in range(1, self.config.max_iterations + 1):
@@ -284,8 +301,19 @@ class AgentLoop:
             return self._commit(record), (STOP_RESOLUTION_CHANGED, mismatch)
 
         # --- 2. 问模型 ---
+        #
+        # **升级动作改不了模型下一步的判断。** 只把 left_click 换成
+        # double_click 的话，模型下一轮多半还给同一个坐标——探针量到的
+        # 重复率 75.3% 就是这么来的。所以把"上一次点了没反应"写进这一轮
+        # 的子任务描述里，让它自己换目标。
+        asked = subtask
+        if self.config.escalate_on_no_change:
+            hint = self.retry_policy.hint()
+            if hint:
+                asked = subtask + "\n\n" + hint
+                record.meta["hint"] = hint
         try:
-            intent, retries = self._predict(subtask, before)
+            intent, retries = self._predict(asked, before)
         except LLMBackendError as exc:
             record.execution_status = "error"
             record.error, record.error_type = str(exc), exc.kind
@@ -346,6 +374,19 @@ class AgentLoop:
 
         record.action_model_coords = action.to_dict()
 
+        # --- 5.5 重试策略：同一位置点了没反应就升级（大纲 W6 任务 2）---
+        if self.config.escalate_on_no_change:
+            revision = self.retry_policy.revise(
+                action.type.value, getattr(action, "x", None), getattr(action, "y", None)
+            )
+            record.meta["retry"] = revision.as_dict()
+            if revision.escalated:
+                # **只改动作类型，不改坐标。** 坐标是模型对目标位置的判断,
+                # 策略没有比它更好的信息;要改的是"用什么方式碰它"。
+                action = action.with_type(revision.action_type)
+                record.action_model_coords = action.to_dict()
+                logger.info("步骤 %d：%s", step_index, revision.reason)
+
         # --- 6. 执行 ---
         start = time.perf_counter()
         outcome = self.executor.execute(action)
@@ -363,6 +404,19 @@ class AgentLoop:
             after = self.capturer.capture(fresh=True)
             latency.screenshot_ms += (time.perf_counter() - start) * 1000.0
             record.screenshot_after = self._save_frame(after, step_index, "after")
+
+        # --- 7.5 这一步到底有没有用 ---
+        if self.config.escalate_on_no_change:
+            from perception.change import compare
+
+            report = compare(before, after, self.config.change_threshold)
+            record.meta["change"] = report.as_dict()
+            self.retry_policy.observe(
+                action.type.value,
+                getattr(action, "x", None),
+                getattr(action, "y", None),
+                changed=report.changed if after is not None else None,
+            )
 
         record.latency = latency.as_dict()
         self._push_history(action, intent.thinking, after or before, outcome)

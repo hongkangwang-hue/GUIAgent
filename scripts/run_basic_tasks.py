@@ -146,6 +146,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="给这次跑起个名字，进存档文件名与 JSON。对比实验必填，例如 base / lora",
     )
     parser.add_argument(
+        "--escalate-on-no-change",
+        action="store_true",
+        help="动作执行后屏幕没变化时自动升级策略(单击→双击),并把「上一次点了没反应」"
+        "回传给模型。大纲 W6 任务 2。**默认关闭**——打开会改变行为,"
+        "而 M2/M3 的实测都是关着跑的",
+    )
+    parser.add_argument(
         "--planner-template",
         default="",
         help="规划器提示词模板，留空用 SessionConfig 的默认值。"
@@ -304,7 +311,10 @@ def main() -> int:
                 executor,
                 capturer,
                 config=SessionConfig(
-                    loop=LoopConfig(max_iterations=max_steps),
+                    loop=LoopConfig(
+                        max_iterations=max_steps,
+                        escalate_on_no_change=args.escalate_on_no_change,
+                    ),
                     executor_template=args.executor_template,
                     planner_template=args.planner_template,
                     allowed_actions=allowed,
@@ -431,6 +441,7 @@ def archive_payload(
             # 存档里没记用了哪份模板,这个混淆是靠翻客机轨迹才发现的。
             "executor_template": args.executor_template,
             "planner_template": args.planner_template,
+            "escalate_on_no_change": args.escalate_on_no_change,
             # 动作集也进存档——同 executor_template,它能左右结论。
             "allowed_actions": [x.strip() for x in args.allowed_actions.split(",") if x.strip()],
             # **屏幕设置也必须进存档。** 同一天查出报告写错了客机分辨率
