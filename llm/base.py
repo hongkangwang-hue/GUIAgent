@@ -160,10 +160,23 @@ class LLMBackendError(RuntimeError):
     可解析，均返回可理解错误"——区分可重试与否是"可理解"的最低要求。
     """
 
-    def __init__(self, message: str, *, retryable: bool = False, kind: str = "unknown") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = False,
+        kind: str = "unknown",
+        raw: str = "",
+    ) -> None:
         super().__init__(message)
         self.retryable = retryable
         self.kind = kind
+        #: 解析失败时模型的原始输出。**必须带着**——没有原文就分不清是
+        #: 模型的问题还是解析层的问题，而那正是 M3 比较各模型格式稳定性
+        #: 的依据。2026-08-25 的 8B 评测上栽过：22 条解析失败全部 raw=''，
+        #: 结果这 22 条既看不出模型说了什么，又被 `summarize()` 从分母里
+        #: 剔掉了，把 8B 的格式合规率从 38.7% 抬成 45.8%。
+        self.raw = raw
 
 
 # ---------------------------------------------------------------------- #
@@ -449,6 +462,7 @@ class LLMBackend(ABC):
                 f"模型输出无法解析：{exc}",
                 retryable=True,
                 kind="parse_error",
+                raw=raw.text,
             ) from exc
 
         return ActionIntent(

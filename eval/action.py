@@ -491,7 +491,28 @@ def _build_predictor(
     )
 
     def predict(row: dict):
-        intent = backend.predict_action(row["instruction"], _screenshot_of(row, image_scale))
+        from llm.base import LLMBackendError
+
+        try:
+            intent = backend.predict_action(row["instruction"], _screenshot_of(row, image_scale))
+        except LLMBackendError as exc:
+            # **解析失败是模型的失败，不是调用的失败。**
+            #
+            # 本地路径遇到解析不出来的输出时不抛异常——`extract()` 静默
+            # 返回 None，那一条留在分母里、记 `format_ok=False`。API 路径
+            # 原来是抛出去的，于是同一种失败在两条路上被记成了两件事：
+            #
+            #     本地：留在分母里，拉低格式合规率
+            #     API ：从分母里剔掉，格式合规率反而变好看
+            #
+            # 2026-08-25 的 8B 评测上，这让格式合规率从 38.7% 变成 45.8%、
+            # 联合命中从 30.3% 变成 35.8%——而它正要跟本地的 142/142 比。
+            #
+            # 只吞 `parse_error`。网络超时、限流、余额不足仍然抛出去记成
+            # error：那些**确实**不是模型的失败，剔出分母才对。
+            if exc.kind != "parse_error":
+                raise
+            return exc.raw, "", None
         raw = intent.raw_text or ""
         action = intent.action_type or ""
         point = None
