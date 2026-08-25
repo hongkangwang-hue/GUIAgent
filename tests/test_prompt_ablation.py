@@ -172,3 +172,60 @@ class TestAblationRunner:
                 ablate_prompts.main()
             finally:
                 sys.argv = saved
+
+
+class TestLimitSampling:
+    """`--limit` 取的必须是**样本**，不是一小撮 session。
+
+    2026-08-25 的实测教训：`val.jsonl` 按 session_id 排序，`--limit 20`
+    切前缀只覆盖到 6 个 session，把 few-shot 的效果放大了约 15 倍
+    （25% vs 真值 4.9%），还配上了 p=0.047 的显著性。
+    """
+
+    ROWS = [{"sample_id": f"{s}-{i}", "session_id": s} for s in "abcde" for i in range(10)]
+
+    def test_前_N_条覆盖_N_个不同_session(self):
+        from eval.action import spread_by_session
+
+        picked = spread_by_session(self.ROWS)[:5]
+        assert len({r["session_id"] for r in picked}) == 5
+
+    def test_切前缀会漏掉大部分_session(self):
+        """把缺陷本身钉住：这条描述的是**修之前**的行为。"""
+        assert len({r["session_id"] for r in self.ROWS[:5]}) == 1
+
+    def test_不丢样本也不重复(self):
+        from eval.action import spread_by_session
+
+        out = spread_by_session(self.ROWS)
+        assert sorted(r["sample_id"] for r in out) == sorted(r["sample_id"] for r in self.ROWS)
+
+    def test_确定性(self):
+        """同一份 val 跑两次要选中同一批，否则探路结果不可比。"""
+        from eval.action import spread_by_session
+
+        assert spread_by_session(self.ROWS) == spread_by_session(self.ROWS)
+
+    def test_session_长度不均也不崩(self):
+        from eval.action import spread_by_session
+
+        rows = [{"sample_id": "a-0", "session_id": "a"}] + [
+            {"sample_id": f"b-{i}", "session_id": "b"} for i in range(4)
+        ]
+        assert len(spread_by_session(rows)) == 5
+
+    def test_没有_session_id_字段时退化为原序(self):
+        from eval.action import spread_by_session
+
+        rows = [{"sample_id": str(i)} for i in range(4)]
+        assert spread_by_session(rows) == rows
+
+    def test_evaluate_用的是轮流取而不是切片(self):
+        """护栏：有人把 `spread_by_session(...)` 删回 `todo[:limit]` 就会红。"""
+        import inspect
+
+        import eval.action
+
+        src = inspect.getsource(eval.action.evaluate)
+        assert "spread_by_session(todo)[:limit]" in src
+        assert "todo = todo[:limit]" not in src

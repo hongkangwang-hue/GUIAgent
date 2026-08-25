@@ -183,6 +183,46 @@ def _screenshot_of(record: dict):
     return Screenshot(image=image, region=BBox(0, 0, width, height), engine="dataset")
 
 
+def spread_by_session(rows: list) -> list:
+    """把样本按 session 轮流取，供 `--limit` 用。
+
+    ## 为什么不能直接切前 N 条
+
+    `val.jsonl` **是按 session_id 排序的**——同一个 session 的十几条样本
+    连在一起。切前 20 条拿到的不是 20 个样本，是 **6 个 session**。
+
+    2026-08-25 的提示词消融就栽在这上面。`--limit 20` 那批：
+
+        P2 格式合规   前 20 条 5/20 = 25%     后 122 条 2/122 = 1.6%
+        P3 格式合规   前 20 条 7/20 = 35%     后 122 条 2/122 = 1.6%
+
+    前 20 条里恰好有一两个 session 的界面模型能应付，而它们占了那批的
+    三分之一，于是「few-shot 的效果」被放大了约 15 倍——**还配上了
+    一个 p=0.047 的显著性**。跑满 142 条才发现真值是 4.9%。
+
+    探路样本的用途正是「先看个大概」，它给出系统性偏高的数就比不跑更糟。
+
+    ## 轮流取而不是随机打散
+
+    随机能降低偏差但不保证覆盖；轮流取保证 N 条来自 min(N, session 数)
+    个不同 session——**N=20 就是 20 个不同 session**，这是能拿到的最好
+    覆盖。同时它是确定性的，同一份 val 跑两次选中的是同一批。
+    """
+    from collections import OrderedDict
+
+    buckets: OrderedDict[str, list] = OrderedDict()
+    for row in rows:
+        buckets.setdefault(row.get("session_id", ""), []).append(row)
+
+    spread = []
+    while buckets:
+        for key in list(buckets):
+            spread.append(buckets[key].pop(0))
+            if not buckets[key]:
+                del buckets[key]
+    return spread
+
+
 def evaluate(
     val_path: Path,
     tag: str,
@@ -224,7 +264,7 @@ def evaluate(
     done = _done_ids(out) if resume else set()
     todo = [r for r in rows if r["sample_id"] not in done]
     if limit:
-        todo = todo[:limit]
+        todo = spread_by_session(todo)[:limit]
 
     predict, closer, label = _build_predictor(
         provider, model, local_model, adapter, system, load_4bit, few_shot
