@@ -1,0 +1,359 @@
+{
+ "summary": {
+  "trajectories": 5,
+  "screens": {
+   "1920x1080 @1.0x": 5
+  },
+  "screen_consistent": true,
+  "screens_unknown": 0,
+  "steps": 33,
+  "distinct_attempts": 14,
+  "repeat_rate": 0.5758,
+  "subtasks_with_retries": 7,
+  "subtasks_where_every_retry_identical": 0
+ },
+ "runs": [
+  {
+   "trajectory_id": "traj-20260825-222609-584eb0",
+   "env": {
+    "resolution": "1920x1080",
+    "scale_factor": 1.0,
+    "capture_engine": "dxcam",
+    "backend": "selfhost",
+    "model": "Qwen/Qwen2.5-VL-3B-Instruct",
+    "started_at": "2026-08-25T22:26:09",
+    "status": "failed"
+   },
+   "steps": 6,
+   "subtasks": 1,
+   "distinct_attempts": 2,
+   "repeat_rate": 0.6667,
+   "detail": [
+    {
+     "subtask_id": 1,
+     "subtask": "点击任务栏上的Microsoft Edge图标",
+     "steps": 6,
+     "distinct_attempts": 2,
+     "max_repeat": 5,
+     "statuses": {
+      "ok": 6
+     },
+     "attempts": [
+      {
+       "action": "left_click",
+       "x": 17,
+       "y": 290
+      },
+      {
+       "action": "left_click",
+       "x": 14,
+       "y": 190
+      },
+      {
+       "action": "left_click",
+       "x": 14,
+       "y": 190
+      },
+      {
+       "action": "left_click",
+       "x": 14,
+       "y": 190
+      },
+      {
+       "action": "left_click",
+       "x": 14,
+       "y": 190
+      },
+      {
+       "action": "left_click",
+       "x": 14,
+       "y": 190
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "trajectory_id": "traj-20260825-222835-1985ff",
+   "env": {
+    "resolution": "1920x1080",
+    "scale_factor": 1.0,
+    "capture_engine": "dxcam",
+    "backend": "selfhost",
+    "model": "Qwen/Qwen2.5-VL-3B-Instruct",
+    "started_at": "2026-08-25T22:28:35",
+    "status": "failed"
+   },
+   "steps": 6,
+   "subtasks": 1,
+   "distinct_attempts": 2,
+   "repeat_rate": 0.6667,
+   "detail": [
+    {
+     "subtask_id": 1,
+     "subtask": "点击任务栏上的Microsoft Edge图标",
+     "steps": 6,
+     "distinct_attempts": 2,
+     "max_repeat": 3,
+     "statuses": {
+      "ok": 6
+     },
+     "attempts": [
+      {
+       "action": "left_click",
+       "x": 17,
+       "y": 190
+      },
+      {
+       "action": "left_click",
+       "x": 18,
+       "y": 180
+      },
+      {
+       "action": "left_click",
+       "x": 18,
+       "y": 180
+      },
+      {
+       "action": "left_click",
+       "x": 18,
+       "y": 180
+      },
+      {
+       "action": "left_click",
+       "x": 17,
+       "y": 190
+      },
+      {
+       "action": "left_click",
+       "x": 17,
+       "y": 190
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "trajectory_id": "traj-20260825-223056-bccc09",
+   "env": {
+    "resolution": "1920x1080",
+    "scale_factor": 1.0,
+    "capture_engine": "dxcam",
+    "backend": "selfhost",
+    "model": "Qwen/Qwen2.5-VL-3B-Instruct",
+    "started_at": "2026-08-25T22:30:56",
+    "status": "failed"
+   },
+   "steps": 6,
+   "subtasks": 1,
+   "distinct_attempts": 2,
+   "repeat_rate": 0.6667,
+   "detail": [
+    {
+     "subtask_id": 1,
+     "subtask": "点击任务栏上的Microsoft Edge图标",
+     "steps": 6,
+     "distinct_attempts": 2,
+     "max_repeat": 5,
+     "statuses": {
+      "ok": 6
+     },
+     "attempts": [
+      {
+       "action": "left_click",
+       "x": 597,
+       "y": 840
+      },
+      {
+       "action": "left_click",
+       "x": 504,
+       "y": 840
+      },
+      {
+       "action": "left_click",
+       "x": 504,
+       "y": 840
+      },
+      {
+       "action": "left_click",
+       "x": 504,
+       "y": 840
+      },
+      {
+       "action": "left_click",
+       "x": 504,
+       "y": 840
+      },
+      {
+       "action": "left_click",
+       "x": 504,
+       "y": 840
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "trajectory_id": "traj-20260825-223329-4731d7",
+   "env": {
+    "resolution": "1920x1080",
+    "scale_factor": 1.0,
+    "capture_engine": "dxcam",
+    "backend": "selfhost",
+    "model": "Qwen/Qwen2.5-VL-3B-Instruct",
+    "started_at": "2026-08-25T22:33:29",
+    "status": "failed"
+   },
+   "steps": 6,
+   "subtasks": 1,
+   "distinct_attempts": 2,
+   "repeat_rate": 0.6667,
+   "detail": [
+    {
+     "subtask_id": 1,
+     "subtask": "点击任务栏上的Microsoft Edge图标",
+     "steps": 6,
+     "distinct_attempts": 2,
+     "max_repeat": 5,
+     "statuses": {
+      "ok": 6
+     },
+     "attempts": [
+      {
+       "action": "left_click",
+       "x": 17,
+       "y": 190
+      },
+      {
+       "action": "left_click",
+       "x": 19,
+       "y": 190
+      },
+      {
+       "action": "left_click",
+       "x": 19,
+       "y": 190
+      },
+      {
+       "action": "left_click",
+       "x": 19,
+       "y": 190
+      },
+      {
+       "action": "left_click",
+       "x": 17,
+       "y": 170
+      },
+      {
+       "action": "left_click",
+       "x": 19,
+       "y": 190
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "trajectory_id": "traj-20260825-223550-027ffb",
+   "env": {
+    "resolution": "1920x1080",
+    "scale_factor": 1.0,
+    "capture_engine": "dxcam",
+    "backend": "selfhost",
+    "model": "Qwen/Qwen2.5-VL-3B-Instruct",
+    "started_at": "2026-08-25T22:35:50",
+    "status": "failed"
+   },
+   "steps": 9,
+   "subtasks": 3,
+   "distinct_attempts": 6,
+   "repeat_rate": 0.3333,
+   "detail": [
+    {
+     "subtask_id": 1,
+     "subtask": "点击任务栏上的Microsoft Edge图标",
+     "steps": 4,
+     "distinct_attempts": 2,
+     "max_repeat": 3,
+     "statuses": {
+      "ok": 3,
+      "no_action": 1
+     },
+     "attempts": [
+      {
+       "action": "left_click",
+       "x": 7,
+       "y": 190
+      },
+      {
+       "action": "left_click",
+       "x": 14,
+       "y": 190
+      },
+      {
+       "action": "left_click",
+       "x": 14,
+       "y": 190
+      },
+      {
+       "action": "",
+       "x": null,
+       "y": null
+      }
+     ]
+    },
+    {
+     "subtask_id": 2,
+     "subtask": "点击浏览器窗口中的地址栏",
+     "steps": 2,
+     "distinct_attempts": 2,
+     "max_repeat": 1,
+     "statuses": {
+      "ok": 1,
+      "no_action": 1
+     },
+     "attempts": [
+      {
+       "action": "left_click",
+       "x": 507,
+       "y": 900
+      },
+      {
+       "action": "",
+       "x": null,
+       "y": null
+      }
+     ]
+    },
+    {
+     "subtask_id": 3,
+     "subtask": "在地址栏输入网址",
+     "steps": 3,
+     "distinct_attempts": 2,
+     "max_repeat": 2,
+     "statuses": {
+      "ok": 2,
+      "error": 1
+     },
+     "attempts": [
+      {
+       "action": "left_click",
+       "x": 507,
+       "y": 900
+      },
+      {
+       "action": "left_click",
+       "x": 507,
+       "y": 900
+      },
+      {
+       "action": "",
+       "x": null,
+       "y": null
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
