@@ -195,6 +195,12 @@ tasks:
       - python tasks/reset_desktop.py
       - taskkill /F /IM notepad.exe /T
       - taskkill /F /IM msedge.exe /T
+      # **先杀干净再开一个。** 原来只有 start calc，Agent 关不掉时旧的会
+      # 留着，于是第 N 轮的起点是 N 个计算器 —— 而 reset 存在的全部理由
+      # 就是让每轮起点相同。2026-08-24 离线-基座组实测到「找到 6 个 →
+      # 7 个 → 8 个 → 9 个」逐轮递增，五轮下来最后一轮和第一轮已经不是
+      # 同一个实验了。
+      - taskkill /F /IM CalculatorApp.exe /T
       - start calc
       - timeout /t 3
     # 没有这一条，计算器没启动时判据会直接打勾（见文件头）。
