@@ -222,3 +222,74 @@ def test_模板能渲染且不留占位符(name):
     text = template.render_system(width=1000, height=1000)
     assert "{action_reference}" not in text
     assert "{width}" not in text and "{height}" not in text
+
+
+class TestExecutorV4:
+    """v4 = v3 + 一条 GUI 常识：**桌面图标要双击**。
+
+    v3 把 `open_browser` 从 0/5 提到 2/5 之后，探针显示剩下的失败形态是：
+
+        子任务「点击任务栏上的Microsoft Edge图标」
+           left_click (15, 190) ×3   ← 桌面上的 Edge 图标，不是任务栏的
+
+    模型**认对了目标类别**，但用了单击——而单击桌面图标只是选中，不会启动。
+    那 2 次成功很可能是连点三下恰好构成了双击。
+
+    v3 保留不动：它的系统提示与 v1 逐字相同，那次 0/5→2/5 的对照靠这一点
+    才可归因。
+    """
+
+    def _system(self, name):
+        return load_template(name).render_system(width=1000, height=1000)
+
+    def test_v4_只比_v3_多几行(self):
+        """**只该多，不该改。** 改了措辞，2/5→? 的差值里就混进了那处改动。"""
+        v3 = set(self._system("executor_v3").splitlines())
+        extra = [line for line in self._system("executor_v4").splitlines() if line not in v3]
+        assert 1 <= len(extra) <= 6, f"多出来 {len(extra)} 行，超出「加一条规则」的范围"
+
+    def test_v4_的示例与_v3_逐字相同(self):
+        assert (
+            load_template("executor_v4").few_shot_pairs()
+            == load_template("executor_v3").few_shot_pairs()
+        )
+
+    def test_规则说明了桌面与任务栏的区别(self):
+        """**光说「要双击」不够。** 任务栏图标单击就启动，一刀切会引入新错误。"""
+        system = self._system("executor_v4")
+        assert "双击" in system
+        assert "任务栏" in system and "单击就启动" in system
+
+    def test_这条规则用的动作在_CLICK_ONLY_里(self):
+        """规则点名了 `double_click`。**它若不在允许集合里，整条会被删掉**——
+
+        那样 v4 就退化成 v3 了，而表格上看不出来。
+        """
+        narrow = load_template("executor_v4").render_system(
+            width=1000, height=1000, allowed_actions=CLICK_ONLY
+        )
+        assert "桌面上的图标要双击" in narrow
+
+    def test_规则点名了要用哪个动作(self):
+        """**「要双击」是自然语言，`double_click` 才是它要输出的东西。**
+
+        规则里只说「双击」而不点名动作，模型得自己完成这层映射——而它
+        在别处已经证明过更听示例、更听字面。变异测试里把
+        ``` `double_click` 才会 ``` 改成「单击才会」，规则当场自相矛盾，
+        而只查「双击」这个词的测试抓不到。
+        """
+        system = self._system("executor_v4")
+        assert "`double_click`" in system
+        rule = next(line for line in system.splitlines() if "桌面上的图标要双击" in line)
+        following = system.split(rule, 1)[1][:120]
+        assert "`double_click`" in rule + following, "规则正文里没点名 double_click"
+
+    def test_规则没有自相矛盾(self):
+        """「单击只是选中」和「单击才会打开」不能同时出现。"""
+        system = self._system("executor_v4")
+        assert "单击桌面图标只是选中" in system
+        squashed = "".join(system.split())
+        assert "单击才会打开" not in squashed, "既说单击只是选中，又说单击才会打开"
+
+    def test_v3_没被改动(self):
+        assert "桌面上的图标要双击" not in self._system("executor_v3")
