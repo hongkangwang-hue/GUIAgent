@@ -183,6 +183,40 @@ def _screenshot_of(record: dict):
     return Screenshot(image=image, region=BBox(0, 0, width, height), engine="dataset")
 
 
+def downscale(image, scale: float):
+    """把图缩到 ``scale`` 倍，供分辨率消融用。``scale >= 1.0`` 时原样返回。
+
+    ## 为什么只降不升
+
+    ScreenAgent 的截图**原生就是 1024×768**——训练集 543 条、验证集 142 条
+    无一例外。放大它不产生任何细节，只会把插值出来的模糊像素喂给模型，
+    测出来的是「模型怕不怕插值」，不是「模型吃不吃分辨率」。
+
+    ## 真值不用跟着变
+
+    真值坐标存的是**归一化的 1000 空间**（`point_norm`），与图片像素尺寸
+    无关；模型也被要求在 1000 空间作答（`SessionConfig.coordinate_space`）。
+    所以缩图这件事**不动真值、不动输出口径**，差值干净地归给分辨率。
+
+    这是能在验证集上做这个消融的前提。若真值存的是像素坐标，
+    缩图就必须同步缩真值，任何一处忘了同步都会让整组数据静默地错掉。
+
+    ## 用 LANCZOS 而不是最近邻
+
+    降采样要的是「看起来像一张低分辨率截图」，不是「丢掉四分之三的像素」。
+    最近邻会产生真实缩放不会有的锯齿，那是另一种伪影。
+    """
+    if scale >= 1.0:
+        return image
+    from PIL import Image as _Image
+
+    width, height = image.size
+    return image.resize(
+        (max(1, round(width * scale)), max(1, round(height * scale))),
+        _Image.LANCZOS,
+    )
+
+
 def spread_by_session(rows: list) -> list:
     """把样本按 session 轮流取，供 `--limit` 用。
 
@@ -234,6 +268,7 @@ def evaluate(
     resume: bool = True,
     load_4bit: bool = False,
     prompt: str = "",
+    image_scale: float = 1.0,
 ) -> Path:
     """跑一档评测，逐条追加到 JSONL。
 
@@ -267,7 +302,7 @@ def evaluate(
         todo = spread_by_session(todo)[:limit]
 
     predict, closer, label = _build_predictor(
-        provider, model, local_model, adapter, system, load_4bit, few_shot
+        provider, model, local_model, adapter, system, load_4bit, few_shot, image_scale
     )
 
     print("=" * 70)
@@ -277,6 +312,8 @@ def evaluate(
     print(f"  模型      {label}")
     print(f"  提示词    {prompt or '训练时的 SYSTEM_PROMPT'}    few-shot {len(few_shot)} 条")
     print(f"  验证集    {val_path}    共 {len(rows)}，已完成 {len(done)}，本次 {len(todo)}")
+    if image_scale < 1.0:
+        print(f"  送图缩放  ×{image_scale}    （分辨率消融，真值是归一化坐标，不随缩放变）")
     print(f"  结果      {out}（逐条追加，可断点续跑）")
     print()
     if not todo:
@@ -333,6 +370,7 @@ def _build_predictor(
     system: str,
     load_4bit: bool = False,
     few_shot: list | None = None,
+    image_scale: float = 1.0,
 ):
     """返回 (predict, close, label)。
 
@@ -386,7 +424,7 @@ def _build_predictor(
         net.eval()
 
         def predict(row: dict):
-            image = Image.open(row["image"]).convert("RGB")
+            image = downscale(Image.open(row["image"]).convert("RGB"), image_scale)
             messages = [
                 {"role": "system", "content": [{"type": "text", "text": system}]},
             ]
@@ -541,11 +579,13 @@ def print_summary(stats: dict) -> None:
         print("  只报总体准确率会被它主导——全输出 left_click 就能拿 76%。")
 
 
-def main() -> int:
-    for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8", errors="replace")
+def build_parser() -> argparse.ArgumentParser:
+    """抽成函数是为了让测试能检查参数表。
 
+    曾经在 `serve_local_model.py` 上栽过：`main()` 读 `args.max_new_tokens`
+    而那个参数**从没注册过**——权重加载完几十秒之后才 AttributeError。
+    参数表拿不到就测不了这种漏接。
+    """
     parser = argparse.ArgumentParser(description="动作生成评测（大纲 W5 微调前后对比）")
     parser.add_argument("--val", default=str(VAL_FILE))
     parser.add_argument("--tag", default="", help="这一档的名字，作为结果文件名")
@@ -555,6 +595,12 @@ def main() -> int:
         "--prompt",
         default="",
         help="提示词模板名（executor_v0 / v1 / v2）。留空用训练时的 SYSTEM_PROMPT",
+    )
+    parser.add_argument(
+        "--image-scale",
+        type=float,
+        default=1.0,
+        help="送图前先缩到这个倍数（分辨率消融用）。>=1.0 表示原样，只降不升",
     )
     parser.add_argument("--local", default="", help="走本地模型，给 HF 模型名或路径")
     parser.add_argument("--adapter", default="", help="LoRA adapter 目录，微调后评测用")
@@ -567,7 +613,15 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--no-resume", action="store_true")
     parser.add_argument("--report", action="store_true", help="只汇总已有结果，不调模型")
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+    args = build_parser().parse_args()
 
     if args.report:
         files = sorted(RESULT_DIR.glob("*.jsonl"))
@@ -611,6 +665,7 @@ def main() -> int:
         resume=not args.no_resume,
         load_4bit=args.load_4bit,
         prompt=args.prompt,
+        image_scale=args.image_scale,
     )
     print_summary(summarize(out))
     return 0
