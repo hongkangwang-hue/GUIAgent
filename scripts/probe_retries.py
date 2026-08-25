@@ -109,7 +109,7 @@ def same_attempt(a: tuple, b: tuple) -> bool:
     return math.dist((a[1], a[2]), (b[1], b[2])) <= SAME_SPOT_RADIUS
 
 
-def analyse_subtask(steps: list[dict], include_text: bool) -> dict:
+def analyse_subtask(steps: list[dict], include_text: bool, include_subtasks: bool = False) -> dict:
     attempts = [action_of(s) for s in steps]
 
     # 去重：逐个跟已有的比，落在 SAME_SPOT_RADIUS 内就并进去
@@ -129,6 +129,7 @@ def analyse_subtask(steps: list[dict], include_text: bool) -> dict:
 
     row = {
         "subtask_id": steps[0].get("subtask_id"),
+        "subtask": str(steps[0].get("subtask", ""))[:TEXT_CAP] if include_subtasks else None,
         "steps": len(steps),
         "distinct_attempts": len(distinct),
         "max_repeat": max(repeats.values()) if repeats else 0,
@@ -136,7 +137,6 @@ def analyse_subtask(steps: list[dict], include_text: bool) -> dict:
         "attempts": [{"action": k, "x": x, "y": y} for k, x, y in attempts],
     }
     if include_text:
-        row["subtask"] = str(steps[0].get("subtask", ""))[:TEXT_CAP]
         row["thinking"] = [str(s.get("model_thinking", ""))[:TEXT_CAP] for s in steps]
     return row
 
@@ -168,7 +168,7 @@ def environment_of(traj_dir: Path) -> dict:
     }
 
 
-def analyse(traj_dir: Path, include_text: bool) -> dict | None:
+def analyse(traj_dir: Path, include_text: bool, include_subtasks: bool = False) -> dict | None:
     steps = load_steps(traj_dir)
     if not steps:
         return None
@@ -177,7 +177,9 @@ def analyse(traj_dir: Path, include_text: bool) -> dict | None:
     for step in steps:
         by_subtask.setdefault(step.get("subtask_id"), []).append(step)
 
-    subtasks = [analyse_subtask(group, include_text) for group in by_subtask.values()]
+    subtasks = [
+        analyse_subtask(group, include_text, include_subtasks) for group in by_subtask.values()
+    ]
     total = sum(s["steps"] for s in subtasks)
     distinct = sum(s["distinct_attempts"] for s in subtasks)
     return {
@@ -234,6 +236,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out", default=str(DEFAULT_OUT))
     parser.add_argument("--since", default="", help="只看 id 不早于此的轨迹，如 traj-20260825")
     parser.add_argument(
+        "--include-subtasks",
+        action="store_true",
+        help="导出子任务文本（各截断 80 字）。**比 --include-text 安全**："
+        "子任务是规划器对**我们自己那句指令**的拆解,不是模型对屏幕内容的描述。"
+        "查「规划器有没有改口」时用",
+    )
+    parser.add_argument(
         "--include-text",
         action="store_true",
         help="连子任务描述与 thinking 一起导出（各截断 80 字）。"
@@ -253,7 +262,7 @@ def main() -> int:
         raise SystemExit(f"{root} 不存在。这个脚本要在**客机**里跑——轨迹在那边。")
 
     dirs = sorted(d for d in root.iterdir() if d.is_dir() and d.name >= args.since)
-    runs = [r for d in dirs if (r := analyse(d, args.include_text))]
+    runs = [r for d in dirs if (r := analyse(d, args.include_text, args.include_subtasks))]
     if not runs:
         raise SystemExit(f"{root} 下没有可读的 steps.jsonl")
 

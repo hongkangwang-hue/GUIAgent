@@ -287,3 +287,46 @@ class TestScreenConsistency:
         assert environment_of(traj) == {}
         traj.joinpath("meta.json").write_text('{"environment":', encoding="utf-8")
         assert environment_of(traj) == {}
+
+
+class TestSubtaskExport:
+    """子任务文本单独一个开关，**比 `--include-text` 安全**。
+
+    子任务是规划器对**我们自己那句指令**的拆解（「点击任务栏上的开始按钮」），
+    不是模型对屏幕内容的描述。查「规划器有没有改口」必须看它，
+    而为此打开 `--include-text` 会把 `model_thinking` 一起带出来——
+    那才是描述屏幕的那一项。
+    """
+
+    def _row(self, **kw):
+        from scripts.probe_retries import analyse_subtask
+
+        return analyse_subtask([step()], **kw)
+
+    def test_默认不导子任务文本(self):
+        assert self._row(include_text=False)["subtask"] is None
+
+    def test_打开开关后导出(self):
+        assert (
+            self._row(include_text=False, include_subtasks=True)["subtask"]
+            == "点击任务栏的开始按钮"
+        )
+
+    def test_只导子任务不带出_thinking(self):
+        """**这是这个开关存在的全部理由。**"""
+        import json
+
+        row = self._row(include_text=False, include_subtasks=True)
+        assert "任务栏上的开始按钮位于" not in json.dumps(row, ensure_ascii=False)
+
+    def test_子任务文本也截断(self):
+        from scripts.probe_retries import TEXT_CAP, analyse_subtask
+
+        row = analyse_subtask([step(subtask="子" * 300)], include_text=False, include_subtasks=True)
+        assert len(row["subtask"]) <= TEXT_CAP
+
+    def test_cli_两个开关互相独立(self):
+        from scripts.probe_retries import build_parser
+
+        args = build_parser().parse_args(["--include-subtasks"])
+        assert args.include_subtasks and not args.include_text
