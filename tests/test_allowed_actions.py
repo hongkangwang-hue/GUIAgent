@@ -192,3 +192,79 @@ class TestCli:
         from scripts.run_basic_tasks import build_parser
 
         assert build_parser().parse_args([]).allowed_actions == ""
+
+
+class TestWholeRuleDropped:
+    """**一条规则要整条删，连同它的续行。**
+
+    2026-08-25 的真实事故。初版按行删，而模板的规则 2 是两行：
+
+        2. **看不清就先观察。** 如果界面还在加载、菜单还在展开，用
+           `wait` 等一下，不要对着中间态乱点。
+
+    只有第二行带 `wait`，删完剩下 **「…菜单还在展开，用」**——一句话被
+    砍成半截。实测 `close_app` 从 4/4 掉到 0/2，两轮都在第一次调用上
+    `parse_error`。
+
+    而 `_drop_rules_naming` 的初版文档里明明写着「改写留下的半句话比整行
+    删掉更危险」。**文档描述了危险，实现造出了它。**
+    """
+
+    def _narrow(self, name="executor_v1"):
+        return load_template(name).render_system(
+            width=1000, height=1000, allowed_actions=CLICK_ONLY
+        )
+
+    def test_多行规则整条消失(self):
+        narrow = self._narrow()
+        assert "`wait`" not in narrow
+        assert "看不清就先观察" not in narrow, "第一行留下了——那就是半截句子"
+        assert "菜单还在展开" not in narrow
+
+    def test_过滤没有造出新的半截行(self):
+        """**只抓过滤造出来的。**
+
+        模板本来就有以「，」结尾的自然换行（`坐标范围是 x ∈ [0,1000)，`），
+        一刀切地禁止连词结尾会误报。真正的判据是：收窄之后**每一行的后继
+        关系都必须在原文里也成立**——一行在原文里有续行、收窄后没有了，
+        那就是被砍了半截。
+        """
+        template = load_template("executor_v1")
+        wide = template.render_system(width=1000, height=1000).splitlines()
+        narrow = self._narrow().splitlines()
+
+        wide_next = {line: wide[i + 1] for i, line in enumerate(wide[:-1])}
+        narrow_next = {line: narrow[i + 1] for i, line in enumerate(narrow[:-1])}
+        for line, following in narrow_next.items():
+            if line not in wide_next:
+                continue
+            original = wide_next[line]
+            if original == following:
+                continue
+            # 后继变了：只有当原后继整块被删时才允许
+            assert original not in narrow, f"{line!r} 的续行 {original!r} 不见了，句子被砍断"
+
+    def test_三份模板都不留半截(self):
+        for name in ("executor_v0", "executor_v1", "executor_v2"):
+            narrow = self._narrow(name)
+            assert "看不清就先观察" not in narrow, f"{name} 留下了半截"
+            assert "中文输入用" not in narrow
+
+    def test_相邻的完整规则没被误删(self):
+        narrow = self._narrow()
+        assert "一次只做一步" in narrow
+        assert "每步执行后你会看到新的截图" in narrow, "规则 1 的续行不该被牵连"
+        assert "点击目标要具体" in narrow
+
+    def test_分组只吃缩进更深的续行(self):
+        from agent.prompts import _blocks
+
+        lines = ["1. 头一条", "   续行", "2. 第二条", "不缩进的普通段落"]
+        blocks = _blocks(lines)
+        assert [len(b) for b in blocks] == [2, 1, 1]
+
+    def test_不是列表项的行不吸收后续(self):
+        """普通段落后面跟缩进行时，不该被当成列表项的续行吞掉。"""
+        from agent.prompts import _blocks
+
+        assert [len(b) for b in _blocks(["普通段落", "   缩进行"])] == [1, 1]

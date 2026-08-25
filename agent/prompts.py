@@ -37,6 +37,7 @@ M2 设计思路里那句话说得很直白：
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -140,8 +141,35 @@ def _safe_format(template: str, values: dict, where: str) -> str:
 # ---------------------------------------------------------------------- #
 
 
+#: 列表项的开头：`- `、`1. `、`* ` 等。用来判断一条规则从哪儿开始。
+_ITEM_START = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s")
+
+
+def _blocks(lines: list[str]) -> list[list[str]]:
+    """把行按「列表项 + 它的续行」分组。
+
+    续行的判据是**缩进比列表项本身深**。模板里长规则就是这么写的：
+
+        2. **看不清就先观察。** 如果界面还在加载、菜单还在展开，用
+           `wait` 等一下，不要对着中间态乱点。
+
+    不成组就没法整条删——见 `_drop_rules_naming` 的事故记录。
+    """
+    blocks: list[list[str]] = []
+    for line in lines:
+        starts_item = bool(_ITEM_START.match(line))
+        indent = len(line) - len(line.lstrip())
+        if blocks and not starts_item and line.strip():
+            head = blocks[-1][0]
+            if _ITEM_START.match(head) and indent > len(head) - len(head.lstrip()):
+                blocks[-1].append(line)
+                continue
+        blocks.append([line])
+    return blocks
+
+
 def _drop_rules_naming(text: str, allowed: Sequence[str] | None) -> str:
-    """删掉正文里点名了**不可用动作**的整行规则。
+    """删掉正文里点名了**不可用动作**的规则——整条删，连同它的续行。
 
     ## 为什么光过滤动作清单不够
 
@@ -153,13 +181,25 @@ def _drop_rules_naming(text: str, allowed: Sequence[str] | None) -> str:
     于是同一份提示词一边说「你只有这四个动作」，一边说「中文输入用 type」。
     这正是本项目一直在防的那种自相矛盾（见模块文档「不能手写」那一节）。
 
-    2026-08-25 写 `allowed_actions` 时，是测试先撞出来的。
+    ## 为什么按「条」而不是按「行」——一次真实事故
 
-    ## 只删整行，不改写
+    初版按行删。而模板里的规则 2 是**两行**：
 
-    改写留下的半句话比整行删掉更危险——它会变成一句无主语的指令。
-    删掉之后规则编号会出现空档（1、2、4），这是有意的：**看得出少了一条，
-    比看不出强。**
+        2. **看不清就先观察。** 如果界面还在加载、菜单还在展开，用
+           `wait` 等一下，不要对着中间态乱点。
+
+    只有第二行带 `wait`，于是删完剩下 **「…菜单还在展开，用」**——
+    **一句话被砍成半截。**
+
+    2026-08-25 实测：`close_app` 从 4/4 掉到 0/2，两轮都在第一次调用上
+    `parse_error`。这个函数的初版文档里写着「改写留下的半句话比整行删掉
+    更危险」，而它自己造出了一模一样的东西。
+
+    n=2 证不了因果，但半截句子必须修——**提示词里不该有语法不完整的指令**。
+
+    ## 删整条，不改写，不renumber
+
+    编号会出现空档（1、2、4）。这是有意的：**看得出少了一条，比看不出强。**
     """
     if not allowed:
         return text
@@ -167,7 +207,12 @@ def _drop_rules_naming(text: str, allowed: Sequence[str] | None) -> str:
     if not excluded:
         return text
     marks = tuple(f"`{name}`" for name in excluded)
-    kept = [line for line in text.splitlines() if not any(m in line for m in marks)]
+    kept = [
+        line
+        for block in _blocks(text.splitlines())
+        if not any(m in line for line in block for m in marks)
+        for line in block
+    ]
     return chr(10).join(kept)
 
 
