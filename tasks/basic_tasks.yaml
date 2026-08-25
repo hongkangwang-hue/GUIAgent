@@ -91,6 +91,16 @@ tasks:
       - python tasks/reset_desktop.py
       - taskkill /F /IM notepad.exe /T
       - taskkill /F /IM msedge.exe /T
+    # **反方向的起点检查。** 判据是「msedge 应在运行」，那么起点就必须是
+    # 「msedge 没在运行」——taskkill 失败（进程挂起、被策略挡住）时，
+    # 这一轮开局浏览器就开着，Agent 什么都不做判据也会打勾。
+    #
+    # 原来只有「关闭应用」查了这个方向，另外三个任务都没查。而**假成功
+    # 恰恰全都来自这个方向**：起点没清干净，判据一上来就满足。
+    precondition:
+      - type: process
+        name: msedge.exe
+        should_run: false
     note: >
       大纲点名的单步任务之一，M2 验收标准 2 期望接近 100%。
       若这条都过不去，说明感知或控制链路有问题，而非模型能力问题。
@@ -120,6 +130,11 @@ tasks:
       - python tasks/reset_desktop.py
       - taskkill /F /IM notepad.exe /T
       - taskkill /F /IM msedge.exe /T
+    # 同 open_browser：判据要「msedge 在运行」，起点就得「msedge 没在运行」。
+    precondition:
+      - type: process
+        name: msedge.exe
+        should_run: false
     note: >
       需要网络。客机走 NAT 可以联网。搜索结果页内容会变，
       但标题里含查询词这一点是稳定的。
@@ -147,6 +162,15 @@ tasks:
     precondition:
       - type: file_exists
         path: C:/agent-test/测试文档.txt
+      # **这一条是补一次真实事故。** 「打开指定文件」曾经从 0% 跳到 100%，
+      # 原因是记事本的会话恢复：taskkill 之后重开，Windows 会把上一次的
+      # 标签页恢复回来，于是「notepad 在运行 + 标题含测试文档」两条判据
+      # 一开局就满足，Agent 一个动作都没做也算成功。
+      #
+      # 那次是靠人眼看出来的。加上这条，同样的情况会被记成无效轮。
+      - type: process
+        name: notepad.exe
+        should_run: false
     note: >
       文件由 setup_env.py 预置，内容固定。两条判据缺一不可，
       理由见文件头。
@@ -174,6 +198,13 @@ tasks:
     precondition:
       - type: window_title
         pattern: 测试消息
+      # 日志必须是干净的。`mock_messenger_reset.py` 负责清空它，但那一步
+      # 可能失败（文件被占用、路径不存在）——而判据是「日志含你好世界」，
+      # 上一轮的内容留着的话，Agent 什么都不做就打勾了。
+      - type: file_contains
+        path: C:/agent-test/messages.log
+        text: 你好世界
+        should_contain: false
     note: >
       操作对象是 tasks/mock_messenger.py —— 本地模拟程序，消息只写本地
       文件。不用真实聊天软件：那需要登录真实账号（违反 M0 数据边界），

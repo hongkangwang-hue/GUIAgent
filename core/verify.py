@@ -152,24 +152,39 @@ def check_window_title(pattern: str, regex: bool = False) -> CheckResult:
     return CheckResult(False, f"没有标题含 {pattern!r} 的窗口。当前窗口：{sample}", "window_title")
 
 
-def check_file_contains(path: str, text: str, encoding: str = "utf-8") -> CheckResult:
-    """文件存在且含指定文本。
+def check_file_contains(
+    path: str, text: str, encoding: str = "utf-8", should_contain: bool = True
+) -> CheckResult:
+    """文件存在且含（或不含）指定文本。
 
     **这是最可靠的一类判据**：它检查的是任务真正产生的副作用，
     不受窗口 Z 序、焦点、动画的影响。能设计成文件判定的任务就别用别的。
+
+    ``should_contain=False`` 是给**起点检查**用的：跑「发送消息」之前，
+    日志里不该已经有「你好世界」——上一轮的内容若没被 reset 清掉，
+    Agent 什么都不做判据也会打勾。`check_process` 早就有这个反方向
+    （`should_run=False`），这里补齐。
     """
     target = Path(path)
     if not target.exists():
-        return CheckResult(False, f"文件不存在：{target}", "file_contains")
+        # 文件不存在时：要求「含」是失败；要求「不含」则**成立**
+        # ——一个不存在的文件当然不含任何东西。
+        if should_contain:
+            return CheckResult(False, f"文件不存在：{target}", "file_contains")
+        return CheckResult(True, f"文件不存在，故不含 {text!r}：{target}", "file_contains")
     try:
         content = target.read_text(encoding=encoding, errors="replace")
     except OSError as exc:
         return CheckResult(False, f"读不出 {target}：{exc}", "file_contains")
-    if text in content:
-        return CheckResult(True, f"{target.name} 含 {text!r}", "file_contains")
+    if (text in content) == should_contain:
+        verb = "含" if should_contain else "不含"
+        return CheckResult(True, f"{target.name} {verb} {text!r}", "file_contains")
     preview = content.strip()[:60].replace("\n", "⏎")
+    # 失败的说法要跟着方向变：要求「含」而没有，与要求「不含」却有，
+    # 是两种完全不同的故障，报同一句话会把排查引到反方向去。
+    verb = "不含" if should_contain else "却含有"
     return CheckResult(
-        False, f"{target.name} 不含 {text!r}；实际内容：{preview!r}", "file_contains"
+        False, f"{target.name} {verb} {text!r}；实际内容：{preview!r}", "file_contains"
     )
 
 
