@@ -102,9 +102,25 @@ class PromptTemplate:
     def render_user(self, **kwargs: Any) -> str:
         return _safe_format(self.user_template, kwargs, where=f"{self.name}.user_template")
 
-    def few_shot_pairs(self) -> list[dict]:
-        """转成 `OpenAICompatBackend` 认的形状。"""
-        return [{"input": e.input, "output": e.output} for e in self.few_shot]
+    def few_shot_pairs(self, allowed_actions: Sequence[str] | None = None) -> list[dict]:
+        """转成 `OpenAICompatBackend` 认的形状。
+
+        ``allowed_actions`` 非空时，**丢掉输出用了不可用动作的示例**。
+
+        不过滤的话，同一份提示词会一边说「你只有这四个动作」，一边给出
+        一条 `{"action": "type", ...}` 的示例——而 2026-08-25 的实测表明
+        **3B 更听示例的**：`allowed_actions` 的硬约束段明说了「不要拆成
+        点开始→输入→回车」，规划器照样这么拆，因为它的 few-shot 就是
+        那么写的。
+
+        示例赢过约束，所以示例本身必须对。
+        """
+        kept = self.few_shot
+        if allowed_actions:
+            excluded = {t.value for t in CORE_ACTIONS} - {str(n) for n in allowed_actions}
+            marks = tuple(f'"action": "{name}"' for name in excluded)
+            kept = [e for e in kept if not any(m in e.output for m in marks)]
+        return [{"input": e.input, "output": e.output} for e in kept]
 
     def as_dict(self) -> dict:
         """进轨迹日志。M3 消融要能追溯每条轨迹用的是哪个提示词版本。"""

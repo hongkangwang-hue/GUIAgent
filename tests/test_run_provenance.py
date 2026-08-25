@@ -138,3 +138,25 @@ class TestAllowedActionsProvenance:
 
         payload = json.loads(archive_payload([], make_args(), "在线", offline=False, partial=False))
         assert payload["allowed_actions"] == []
+
+
+class TestPlannerTemplateProvenance:
+    def test_规划器模板也进存档(self):
+        """**两份模板都能左右结论。** 2026-08-25 的事故正是两者的示例串成回路。"""
+        import json
+
+        from scripts.run_basic_tasks import archive_payload
+
+        args = make_args(planner_template="planner_v2", executor_template="executor_v3")
+        payload = json.loads(archive_payload([], args, "离线", offline=True, partial=False))
+        assert payload["planner_template"] == "planner_v2"
+        assert payload["executor_template"] == "executor_v3"
+
+    def test_默认留空并在_main_里解析(self):
+        import inspect
+
+        import scripts.run_basic_tasks as mod
+        from scripts.run_basic_tasks import build_parser
+
+        assert build_parser().parse_args([]).planner_template == ""
+        assert "args.planner_template or SessionConfig.planner_template" in inspect.getsource(mod)

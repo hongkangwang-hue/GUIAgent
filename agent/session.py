@@ -281,7 +281,9 @@ class Session:
         self.backend.system_prompt = self.executor_template.render_system(
             width=width, height=height, allowed_actions=self.config.allowed_actions or None
         )
-        self.backend.few_shot = self.executor_template.few_shot_pairs()
+        self.backend.few_shot = self.executor_template.few_shot_pairs(
+            self.config.allowed_actions or None
+        )
         self.backend.user_template = self.executor_template.user_template
         # 用户模板里的 {width}/{height} 也必须是**坐标系**尺寸。
         # 只把它传给系统提示、却让用户模板去读 image_size，结果是同一次

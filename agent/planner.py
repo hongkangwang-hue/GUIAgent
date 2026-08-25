@@ -340,7 +340,7 @@ class Planner:
         saved = (self.backend.system_prompt, self.backend.few_shot, self.backend.user_template)
         try:
             self.backend.system_prompt = system
-            self.backend.few_shot = self.template.few_shot_pairs()
+            self.backend.few_shot = self.template.few_shot_pairs(self.allowed_actions or None)
             # 拆解阶段的用户消息已经由模板渲染好了，后端不要再包一层
             # "这是当前屏幕…请判断下一步动作"——那是执行阶段的说法，
             # 混进拆解请求里会把模型引向输出单个动作而不是子任务列表

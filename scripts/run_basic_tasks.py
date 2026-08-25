@@ -146,6 +146,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="给这次跑起个名字，进存档文件名与 JSON。对比实验必填，例如 base / lora",
     )
     parser.add_argument(
+        "--planner-template",
+        default="",
+        help="规划器提示词模板，留空用 SessionConfig 的默认值。"
+        "**与 --executor-template executor_v3 配套用 planner_v2**："
+        "v1 的两份示例串成了一条固定回路(规划器产出「点击任务栏的开始按钮」→"
+        "执行器吐出示例常数 (470,750) → 桌面壁纸)",
+    )
+    parser.add_argument(
         "--allowed-actions",
         default="",
         help="逗号分隔，限定执行器与规划器只用这些动作。"
@@ -232,6 +240,7 @@ def main() -> int:
     # 不写字面量默认值：那样 SessionConfig 改了默认、这里不跟着改，
     # 存档记下的就不是实际用的那份模板——而这正是 §10.8 那个混淆的形态。
     args.executor_template = args.executor_template or SessionConfig.executor_template
+    args.planner_template = args.planner_template or SessionConfig.planner_template
     allowed = tuple(x.strip() for x in args.allowed_actions.split(",") if x.strip())
 
     space = SessionConfig().coordinate_space
@@ -297,6 +306,7 @@ def main() -> int:
                 config=SessionConfig(
                     loop=LoopConfig(max_iterations=max_steps),
                     executor_template=args.executor_template,
+                    planner_template=args.planner_template,
                     allowed_actions=allowed,
                 ),
             )
@@ -420,6 +430,7 @@ def archive_payload(
             # 逐字背诵 `executor_v1` few-shot 示例里的坐标 (470, 750)。当时
             # 存档里没记用了哪份模板,这个混淆是靠翻客机轨迹才发现的。
             "executor_template": args.executor_template,
+            "planner_template": args.planner_template,
             # 动作集也进存档——同 executor_template,它能左右结论。
             "allowed_actions": [x.strip() for x in args.allowed_actions.split(",") if x.strip()],
             # **屏幕设置也必须进存档。** 同一天查出报告写错了客机分辨率
