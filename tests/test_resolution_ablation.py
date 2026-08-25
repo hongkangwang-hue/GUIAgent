@@ -182,6 +182,38 @@ class TestEvaluateWiring:
 
         assert "image_scale" in inspect.signature(evaluate).parameters
 
+    def test_api_路径也吃缩放(self):
+        """**两条路都要接。** 只接本地那条的话，`--provider` 下四档会跑出
+
+        四组一模一样的数——而那看起来正是一个干净的「分辨率无影响」结论。
+        """
+        import cv2
+        import numpy as np
+
+        import eval.action
+
+        path = "finetune/data/val.jsonl"
+        import json
+        from pathlib import Path
+
+        if not Path(path).exists():
+            pytest.skip("验证集不在，跳过")
+        row = json.loads(Path(path).read_text(encoding="utf-8").splitlines()[0])
+        if not Path(row["image"]).exists():
+            pytest.skip("验证集图片不在，跳过")
+        full = eval.action._screenshot_of(row)
+        half = eval.action._screenshot_of(row, 0.5)
+        assert half.image.shape[1] == round(full.image.shape[1] * 0.5)
+        assert isinstance(half.image, np.ndarray) and cv2 is not None
+
+    def test_api_predict_把缩放传下去了(self):
+        import inspect
+
+        import eval.action
+
+        src = inspect.getsource(eval.action._build_predictor)
+        assert "_screenshot_of(row, image_scale)" in src, "API 路径漏传 image_scale"
+
     def test_预测路径确实用了缩放(self):
         """护栏：`--image-scale` 接上了但预测里没用，四档会跑出一模一样的数。
 

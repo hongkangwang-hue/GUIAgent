@@ -167,7 +167,13 @@ def _done_ids(path: Path) -> set[str]:
     return done
 
 
-def _screenshot_of(record: dict):
+def _screenshot_of(record: dict, scale: float = 1.0):
+    """把验证集的图读成 Screenshot。``scale`` 与本地路径的 `downscale` 同义。
+
+    **API 路径也必须吃这个参数。** 少了它，`--image-scale` 在 `--provider`
+    下会被静默忽略，四档消融跑出四组一模一样的数——而那看起来正是一个
+    干净的「分辨率无影响」结论。
+    """
     import cv2
     import numpy as np
 
@@ -179,6 +185,13 @@ def _screenshot_of(record: dict):
     image = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
     if image is None:
         raise OSError(f"读不出图片：{record['image']}")
+    if scale < 1.0:
+        height, width = image.shape[:2]
+        image = cv2.resize(
+            image,
+            (max(1, round(width * scale)), max(1, round(height * scale))),
+            interpolation=cv2.INTER_AREA,
+        )
     height, width = image.shape[:2]
     return Screenshot(image=image, region=BBox(0, 0, width, height), engine="dataset")
 
@@ -478,7 +491,7 @@ def _build_predictor(
     )
 
     def predict(row: dict):
-        intent = backend.predict_action(row["instruction"], _screenshot_of(row))
+        intent = backend.predict_action(row["instruction"], _screenshot_of(row, image_scale))
         raw = intent.raw_text or ""
         action = intent.action_type or ""
         point = None
