@@ -1,0 +1,466 @@
+{
+ "summary": {
+  "trajectories": 7,
+  "screens": {
+   "1920x1080 @1.0x": 7
+  },
+  "screen_consistent": true,
+  "screens_unknown": 0,
+  "steps": 45,
+  "distinct_attempts": 15,
+  "repeat_rate": 0.6667,
+  "subtasks_with_retries": 8,
+  "subtasks_where_every_retry_identical": 4
+ },
+ "runs": [
+  {
+   "trajectory_id": "traj-20260825-212816-0d1455",
+   "env": {
+    "resolution": "1920x1080",
+    "scale_factor": 1.0,
+    "capture_engine": "dxcam",
+    "backend": "selfhost",
+    "model": "Qwen/Qwen2.5-VL-3B-Instruct",
+    "started_at": "2026-08-25T21:28:16",
+    "status": "failed"
+   },
+   "steps": 6,
+   "subtasks": 1,
+   "distinct_attempts": 3,
+   "repeat_rate": 0.5,
+   "detail": [
+    {
+     "subtask_id": 1,
+     "subtask": "点击计算器窗口右上角的关闭按钮",
+     "steps": 6,
+     "distinct_attempts": 3,
+     "max_repeat": 3,
+     "statuses": {
+      "ok": 6
+     },
+     "attempts": [
+      {
+       "action": "left_click",
+       "x": 986,
+       "y": 23
+      },
+      {
+       "action": "left_click",
+       "x": 970,
+       "y": 95
+      },
+      {
+       "action": "left_click",
+       "x": 970,
+       "y": 95
+      },
+      {
+       "action": "left_click",
+       "x": 970,
+       "y": 95
+      },
+      {
+       "action": "left_click",
+       "x": 968,
+       "y": 968
+      },
+      {
+       "action": "left_click",
+       "x": 968,
+       "y": 968
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "trajectory_id": "traj-20260825-213036-80db3d",
+   "env": {
+    "resolution": "1920x1080",
+    "scale_factor": 1.0,
+    "capture_engine": "dxcam",
+    "backend": "selfhost",
+    "model": "Qwen/Qwen2.5-VL-3B-Instruct",
+    "started_at": "2026-08-25T21:30:36",
+    "status": "failed"
+   },
+   "steps": 6,
+   "subtasks": 1,
+   "distinct_attempts": 4,
+   "repeat_rate": 0.3333,
+   "detail": [
+    {
+     "subtask_id": 1,
+     "subtask": "点击计算器窗口右上角的关闭按钮",
+     "steps": 6,
+     "distinct_attempts": 4,
+     "max_repeat": 3,
+     "statuses": {
+      "ok": 6
+     },
+     "attempts": [
+      {
+       "action": "left_click",
+       "x": 986,
+       "y": 23
+      },
+      {
+       "action": "left_click",
+       "x": 970,
+       "y": 950
+      },
+      {
+       "action": "left_click",
+       "x": 970,
+       "y": 950
+      },
+      {
+       "action": "left_click",
+       "x": 970,
+       "y": 950
+      },
+      {
+       "action": "left_click",
+       "x": 632,
+       "y": 800
+      },
+      {
+       "action": "left_click",
+       "x": 970,
+       "y": 800
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "trajectory_id": "traj-20260825-213740-3507af",
+   "env": {
+    "resolution": "1920x1080",
+    "scale_factor": 1.0,
+    "capture_engine": "dxcam",
+    "backend": "selfhost",
+    "model": "Qwen/Qwen2.5-VL-3B-Instruct",
+    "started_at": "2026-08-25T21:37:40",
+    "status": "failed"
+   },
+   "steps": 6,
+   "subtasks": 1,
+   "distinct_attempts": 1,
+   "repeat_rate": 0.8333,
+   "detail": [
+    {
+     "subtask_id": 1,
+     "subtask": "点击任务栏的开始按钮",
+     "steps": 6,
+     "distinct_attempts": 1,
+     "max_repeat": 6,
+     "statuses": {
+      "ok": 6
+     },
+     "attempts": [
+      {
+       "action": "left_click",
+       "x": 470,
+       "y": 750
+      },
+      {
+       "action": "left_click",
+       "x": 470,
+       "y": 750
+      },
+      {
+       "action": "left_click",
+       "x": 470,
+       "y": 750
+      },
+      {
+       "action": "left_click",
+       "x": 470,
+       "y": 750
+      },
+      {
+       "action": "left_click",
+       "x": 470,
+       "y": 750
+      },
+      {
+       "action": "left_click",
+       "x": 470,
+       "y": 750
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "trajectory_id": "traj-20260825-214007-f49b01",
+   "env": {
+    "resolution": "1920x1080",
+    "scale_factor": 1.0,
+    "capture_engine": "dxcam",
+    "backend": "selfhost",
+    "model": "Qwen/Qwen2.5-VL-3B-Instruct",
+    "started_at": "2026-08-25T21:40:07",
+    "status": "failed"
+   },
+   "steps": 6,
+   "subtasks": 1,
+   "distinct_attempts": 1,
+   "repeat_rate": 0.8333,
+   "detail": [
+    {
+     "subtask_id": 1,
+     "subtask": "点击任务栏的开始按钮",
+     "steps": 6,
+     "distinct_attempts": 1,
+     "max_repeat": 6,
+     "statuses": {
+      "ok": 6
+     },
+     "attempts": [
+      {
+       "action": "left_click",
+       "x": 470,
+       "y": 750
+      },
+      {
+       "action": "left_click",
+       "x": 470,
+       "y": 750
+      },
+      {
+       "action": "left_click",
+       "x": 470,
+       "y": 750
+      },
+      {
+       "action": "left_click",
+       "x": 470,
+       "y": 750
+      },
+      {
+       "action": "left_click",
+       "x": 470,
+       "y": 750
+      },
+      {
+       "action": "left_click",
+       "x": 470,
+       "y": 750
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "trajectory_id": "traj-20260825-214232-98c08a",
+   "env": {
+    "resolution": "1920x1080",
+    "scale_factor": 1.0,
+    "capture_engine": "dxcam",
+    "backend": "selfhost",
+    "model": "Qwen/Qwen2.5-VL-3B-Instruct",
+    "started_at": "2026-08-25T21:42:32",
+    "status": "failed"
+   },
+   "steps": 6,
+   "subtasks": 1,
+   "distinct_attempts": 1,
+   "repeat_rate": 0.8333,
+   "detail": [
+    {
+     "subtask_id": 1,
+     "subtask": "点击任务栏的开始按钮",
+     "steps": 6,
+     "distinct_attempts": 1,
+     "max_repeat": 6,
+     "statuses": {
+      "ok": 6
+     },
+     "attempts": [
+      {
+       "action": "left_click",
+       "x": 470,
+       "y": 750
+      },
+      {
+       "action": "left_click",
+       "x": 470,
+       "y": 750
+      },
+      {
+       "action": "left_click",
+       "x": 470,
+       "y": 750
+      },
+      {
+       "action": "left_click",
+       "x": 470,
+       "y": 750
+      },
+      {
+       "action": "left_click",
+       "x": 470,
+       "y": 750
+      },
+      {
+       "action": "left_click",
+       "x": 470,
+       "y": 750
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "trajectory_id": "traj-20260825-214457-391dfc",
+   "env": {
+    "resolution": "1920x1080",
+    "scale_factor": 1.0,
+    "capture_engine": "dxcam",
+    "backend": "selfhost",
+    "model": "Qwen/Qwen2.5-VL-3B-Instruct",
+    "started_at": "2026-08-25T21:44:57",
+    "status": "failed"
+   },
+   "steps": 6,
+   "subtasks": 1,
+   "distinct_attempts": 1,
+   "repeat_rate": 0.8333,
+   "detail": [
+    {
+     "subtask_id": 1,
+     "subtask": "点击任务栏的开始按钮",
+     "steps": 6,
+     "distinct_attempts": 1,
+     "max_repeat": 6,
+     "statuses": {
+      "ok": 6
+     },
+     "attempts": [
+      {
+       "action": "left_click",
+       "x": 470,
+       "y": 750
+      },
+      {
+       "action": "left_click",
+       "x": 470,
+       "y": 750
+      },
+      {
+       "action": "left_click",
+       "x": 470,
+       "y": 750
+      },
+      {
+       "action": "left_click",
+       "x": 470,
+       "y": 750
+      },
+      {
+       "action": "left_click",
+       "x": 470,
+       "y": 750
+      },
+      {
+       "action": "left_click",
+       "x": 470,
+       "y": 750
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "trajectory_id": "traj-20260825-214721-6547cd",
+   "env": {
+    "resolution": "1920x1080",
+    "scale_factor": 1.0,
+    "capture_engine": "dxcam",
+    "backend": "selfhost",
+    "model": "Qwen/Qwen2.5-VL-3B-Instruct",
+    "started_at": "2026-08-25T21:47:21",
+    "status": "failed"
+   },
+   "steps": 9,
+   "subtasks": 2,
+   "distinct_attempts": 4,
+   "repeat_rate": 0.5556,
+   "detail": [
+    {
+     "subtask_id": 1,
+     "subtask": "点击任务栏的开始按钮",
+     "steps": 4,
+     "distinct_attempts": 2,
+     "max_repeat": 3,
+     "statuses": {
+      "ok": 3,
+      "no_action": 1
+     },
+     "attempts": [
+      {
+       "action": "left_click",
+       "x": 470,
+       "y": 750
+      },
+      {
+       "action": "left_click",
+       "x": 470,
+       "y": 750
+      },
+      {
+       "action": "left_click",
+       "x": 470,
+       "y": 750
+      },
+      {
+       "action": "",
+       "x": null,
+       "y": null
+      }
+     ]
+    },
+    {
+     "subtask_id": 2,
+     "subtask": "在搜索框输入\"Microsoft Edge\"",
+     "steps": 5,
+     "distinct_attempts": 2,
+     "max_repeat": 4,
+     "statuses": {
+      "ok": 4,
+      "error": 1
+     },
+     "attempts": [
+      {
+       "action": "left_click",
+       "x": 428,
+       "y": 936
+      },
+      {
+       "action": "left_click",
+       "x": 428,
+       "y": 936
+      },
+      {
+       "action": "left_click",
+       "x": 428,
+       "y": 936
+      },
+      {
+       "action": "left_click",
+       "x": 428,
+       "y": 936
+      },
+      {
+       "action": "",
+       "x": null,
+       "y": null
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
