@@ -233,7 +233,13 @@ tasks:
       # 同一个实验了。
       - taskkill /F /IM CalculatorApp.exe /T
       - start calc
-      - timeout /t 3
+      # **轮询而不是死等 3 秒。** 计算器是 UWP 应用，刚被 taskkill 干掉
+      # 之后的冷启动经常超过 3 秒。2026-08-25 离线-微调组实测：25 轮里
+      # 第 1 轮起点未建立、后面 4 轮都过，正是冷启动慢的形态。
+      #
+      # 而无效轮**不进分母**，于是这批的分母会从 5 悄悄变成 4——
+      # 一个纯粹由等待时间造成的、看不出来的样本损失。
+      - python tasks/wait_for_process.py CalculatorApp.exe
     # 没有这一条，计算器没启动时判据会直接打勾（见文件头）。
     precondition:
       - type: process
