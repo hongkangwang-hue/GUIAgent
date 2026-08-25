@@ -206,6 +206,29 @@ def main() -> int:
     scaler.register("planner", *space)
     executor = ActionExecutor(scaler, space_name="planner", dry_run=not args.execute)
 
+    # **存档路径开跑前就定好，每轮写一次。**
+    #
+    # 原来只在最后 `render()` 里写一次，于是中断 = 全丢：2026-08-25 一次
+    # 重启把跑了一半的离线-微调组整个抹掉了，前面两小时白费。而且它还
+    # 逼着人「要么全跑完，要么什么都别看」——想先跑十分钟探探路都不行。
+    #
+    # 每轮一次 JSON 写盘，几百 KB，相对于一轮几十秒到十分钟的耗时可以忽略。
+    RUNS.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    suffix = f"-{_slug(args.tag)}" if args.tag else ""
+    archive = RUNS / (
+        f"{stamp}-{args.only or 'all'}-{'exec' if args.execute else 'dry'}"
+        f"-{'offline' if offline else 'online'}{suffix}.json"
+    )
+    label = describe(backend)
+
+    def save(partial: bool = True) -> None:
+        archive.write_text(
+            archive_payload(records, args, label, offline, partial=partial), encoding="utf-8"
+        )
+
+    print(f"  存档     {archive}（每轮实时写入，中断也不丢）")
+
     records: list[RunRecord] = []
     for task in tasks:
         check = SuccessCheck.from_spec(task.get("success_check"))
@@ -230,6 +253,7 @@ def main() -> int:
                     print(f"      [无效轮] 起点未建立：{record.precondition_detail[:120]}")
                     print("        本轮不计入成功率。检查 reset 命令与测试环境。")
                     records.append(record)
+                    save()
                     continue
 
             backend.reset_cost()
@@ -305,15 +329,50 @@ def main() -> int:
             if not record.verified:
                 print(f"        {record.verify_detail[:150]}")
             records.append(record)
+            save()
         print()
 
-    label = describe(backend)
+    save(partial=False)
     backend.close()
-    render(records, args, backend_label=label, offline=offline)
+    render(records, args, backend_label=label, offline=offline, archive=archive)
     return 0
 
 
-def render(records: list[RunRecord], args, backend_label: str = "", offline: bool = False) -> None:
+def archive_payload(
+    records: list[RunRecord], args, backend_label: str, offline: bool, partial: bool
+) -> str:
+    """存档的 JSON 文本。增量写与最终写共用同一份构造。
+
+    ``partial=True`` 表示这是跑到一半的快照 —— **必须标出来**，否则一份
+    因中断而只有 12 轮的存档，看起来和一次「只跑 12 轮」的正常实验一模一样。
+    """
+    return json.dumps(
+        {
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "executed": bool(args.execute),
+            "repeats": args.repeats,
+            "scope": args.only or "all",
+            # **后端必须进存档。** 在线与离线两份存档除了数字之外长得一模一样，
+            # 不记下来，隔几天就分不清哪份是哪份——而这两份正是对比报告的全部依据。
+            "backend": backend_label,
+            "offline": offline,
+            "tag": args.tag,
+            # 跑完了没有。中断的存档不能当完整数据用。
+            "partial": partial,
+            "records": [asdict(r) for r in records],
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+def render(
+    records: list[RunRecord],
+    args,
+    backend_label: str = "",
+    offline: bool = False,
+    archive: Path | None = None,
+) -> None:
     from collections import defaultdict
 
     by_task: dict[str, list[RunRecord]] = defaultdict(list)
@@ -404,22 +463,7 @@ def render(records: list[RunRecord], args, backend_label: str = "", offline: boo
         if records:
             print(f"  单任务平均 {cost / len(records):.4f} 元")
 
-    payload = json.dumps(
-        {
-            "generated_at": datetime.now().isoformat(timespec="seconds"),
-            "executed": bool(args.execute),
-            "repeats": args.repeats,
-            "scope": args.only or "all",
-            # **后端必须进存档。** 在线与离线两份存档除了数字之外长得一模一样，
-            # 不记下来，隔几天就分不清哪份是哪份——而这两份正是对比报告的全部依据。
-            "backend": backend_label,
-            "offline": offline,
-            "tag": args.tag,
-            "records": [asdict(r) for r in records],
-        },
-        ensure_ascii=False,
-        indent=2,
-    )
+    payload = archive_payload(records, args, backend_label, offline, partial=False)
     # **只有「在线 + 全量 + 实机」这一种跑法才配写 M2 的交付物。**
     #
     # `RAW` 是 M2 验收报告引用的那份数据，说的是在线版 19/24。任何别的跑法
@@ -439,19 +483,9 @@ def render(records: list[RunRecord], args, backend_label: str = "", offline: boo
         RAW.parent.mkdir(parents=True, exist_ok=True)
         RAW.write_text(payload, encoding="utf-8")
 
-    RUNS.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    scope = args.only or "all"
-    mode = "exec" if args.execute else "dry"
-    where = "offline" if offline else "online"
-    # **`--tag` 进文件名，省掉「跑完手动改名」这一步。**
-    #
-    # 离线-基座与离线-微调在客机侧的命令完全相同（区别在宿主机起的是哪个
-    # 服务），存档名于是也完全相同，只差时间戳。原来靠人跑完立刻改名区分
-    # ——而那是一步没有任何价值、却能毁掉一小时数据的手工操作。
-    suffix = f"-{_slug(args.tag)}" if args.tag else ""
-    archive = RUNS / f"{stamp}-{scope}-{mode}-{where}{suffix}.json"
-    archive.write_text(payload, encoding="utf-8")
+    # 存档已由主循环每轮写过了，这里不重复写——路径也由主循环给，
+    # 不能再算一次：两处各自 `datetime.now()` 会得到不同的时间戳，
+    # 于是同一次运行留下两个文件。
     if not skip_raw:
         print(f"  原始数据 {RAW}")
     print(f"  存档     {archive}")
