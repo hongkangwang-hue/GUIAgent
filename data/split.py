@@ -36,7 +36,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from data.schema import Platform, UnifiedSample
+from data.schema import Platform, UnifiedSample, is_trainable
 
 #: 划分种子。**改这个数就等于换了一份训练集**，M3 的所有结果将不可比。
 #: 定成常量而不是参数默认值，是为了让它在代码里只出现一次。
@@ -58,18 +58,33 @@ TARGET_VAL = 500
 MAX_VAL_RATIO = 0.2
 
 
-def grounding_pool(
+def training_pool(
     samples: Iterable[UnifiedSample],
     *,
     datasets: Sequence[str] = ("screenagent",),
     splits: Sequence[str] = ("train",),
     platforms: Sequence[Platform] = (Platform.DESKTOP,),
 ) -> list[UnifiedSample]:
-    """挑出可以作为 grounding 监督信号的样本。
+    """挑出可以作为**动作生成**监督信号的样本。
 
-    这是**选取**不是清洗：被排除的样本没有任何问题，只是不带坐标
-    （ScreenAgent 的规划 / 评估 / 键盘动作）或不属于目标场景。两件事分开的
-    理由见 `data.clean._no_location`。
+    这是**选取**不是清洗：被排除的样本没有任何问题，只是缺了该动作必需的
+    字段，或不属于目标场景。两件事分开的理由见 `data.clean._no_location`。
+
+    ## 2026-08-26：这个函数原名 `grounding_pool`，条件是一行
+
+        and s.resolve_point() is not None
+
+    只有带坐标的样本能通过，于是 ScreenAgent 4012 条里只剩 716 条，
+    `type` / `key` / `done` / `wait` / `scroll` 全部落在门外。
+
+    根因不是过滤写错了，是**它写于「grounding 层」时期**——那时任务定义
+    就是「元素描述 → 坐标」，"必须有坐标"正是任务本身。2026-08-24 目标
+    改为动作生成后，这个条件没跟着改，函数名也没改。
+
+    > 教训：**目标改了要回头查过滤器。** 一个按旧目标写的筛选条件，在新
+    > 目标下不会报错，只会安静地把大部分数据挡在门外，而计数看起来很正常。
+
+    准入判据现在是 `data.schema.is_trainable`——按动作类型各查各的必需字段。
     """
     wanted_platforms = {p.value for p in platforms}
     return [
@@ -78,7 +93,7 @@ def grounding_pool(
         if s.source_dataset in datasets
         and s.split in splits
         and s.platform.value in wanted_platforms
-        and s.resolve_point() is not None
+        and is_trainable(s)
     ]
 
 
@@ -258,5 +273,5 @@ __all__ = [
     "TARGET_VAL",
     "FrozenSplit",
     "freeze_split",
-    "grounding_pool",
+    "training_pool",
 ]

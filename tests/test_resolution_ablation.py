@@ -62,20 +62,41 @@ class TestDownscale:
 class TestTruthIsResolutionIndependent:
     """**这一组是整个消融成立的前提。**"""
 
-    def test_真值存的是归一化坐标而不是像素(self):
-        """`point_norm` 与 `point_px` 必须是两个不同的字段，且评测用前者。
-
-        它们相等就说明分辨率恰好是 1000×1000，那是巧合不是设计。
-        """
+    def _rows(self):
         import json
         from pathlib import Path
 
         path = Path("finetune/data/val.jsonl")
         if not path.exists():
             pytest.skip("验证集不在，跳过")
-        row = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
-        assert "point_norm" in row and "point_px" in row
-        assert row["point_norm"] != row["point_px"]
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+    def test_真值存的是归一化坐标而不是像素(self):
+        """`point_norm` 与 `point_px` 必须是两个不同的字段，且评测用前者。
+
+        它们相等就说明分辨率恰好是 1000×1000，那是巧合不是设计。
+
+        **不能只看第一行。** 训练集放宽后第一行可能是 `key` / `type` / `done`
+        这类本来就没有坐标的动作——2026-08-26 这条测试就是这么红的。
+        """
+        rows = [
+            r for r in self._rows() if r["action"] in ("left_click", "double_click", "mouse_move")
+        ]
+        assert rows, "验证集里一条带坐标的动作都没有，那才是真出问题了"
+        for row in rows[:20]:
+            assert "point_norm" in row and "point_px" in row
+            assert row["point_norm"] != row["point_px"]
+
+    def test_不涉及坐标的动作不该有坐标字段(self):
+        """**留一个空坐标比没有坐标更糟。**
+
+        `llm.parsing` 里就有同样的处理：抠不出成对坐标时把半截的也清掉，
+        否则 `needs_grounding` 会判成「不缺坐标」，然后在 `Action.validate`
+        那里才炸，错误信息离根因太远。
+        """
+        for row in self._rows():
+            if row["action"] in ("type", "key", "wait", "done", "scroll"):
+                assert "point_norm" not in row and "point_px" not in row
 
     def test_坐标空间与图片尺寸是两回事(self):
         from agent.session import SessionConfig

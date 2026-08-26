@@ -29,14 +29,15 @@ import argparse
 import subprocess
 import sys
 import zipfile
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from data.clean import DEFAULT_RULES, clean  # noqa: E402
 from data.loaders import build_all  # noqa: E402
-from data.schema import Platform, write_jsonl  # noqa: E402
-from data.split import freeze_split, grounding_pool  # noqa: E402
+from data.schema import Platform, training_action, write_jsonl  # noqa: E402
+from data.split import freeze_split, training_pool  # noqa: E402
 from data.stats import collect, collect_by_dataset, overlap  # noqa: E402
 
 RAW = Path("data/raw")
@@ -187,8 +188,10 @@ def build(with_charts: bool = True) -> int:
     print("\n" + "=" * 66)
     print("M3 前置件①：三分划定与冻结")
     print("=" * 66)
-    pool = grounding_pool(kept)
-    print(f"  grounding 可用池：{len(pool)} 条（ScreenAgent train 划分中带坐标的桌面样本）")
+    pool = training_pool(kept)
+    print(f"  动作生成可用池：{len(pool)} 条（ScreenAgent train 划分中字段齐全的桌面样本）")
+    breakdown = Counter(training_action(s) for s in pool)
+    print("    " + "  ".join(f"{k} {v}" for k, v in breakdown.most_common()))
     split = freeze_split(pool)
     print(
         f"  训练集 {split.train_size} 条 / {len(split.train_groups)} 个会话；"

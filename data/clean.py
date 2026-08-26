@@ -86,7 +86,7 @@ def _no_location(sample: UnifiedSample) -> bool:
     坐标，它们是数据集结构的一部分。把它们当脏数据剔掉，"动作类型分布"
     那张图就只剩鼠标动作，等于抹掉了这个数据集最有特点的地方。
 
-    需要挑选 grounding 训练样本时用 `data.split.grounding_pool()`，那是
+    需要挑选动作生成训练样本时用 `data.split.training_pool()`，那是
     "选取"不是"清洗"，两件事分开。
     """
     return sample.resolve_point() is None

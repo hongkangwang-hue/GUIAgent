@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 import types
 
 from finetune.dataset import COORD_SPACE, build_record, executable_action, normalize_point, task_of
@@ -37,9 +38,19 @@ def _sample(
     meta=None,
     action_type="click",
     subtype="click",
+    raw_type="MouseAction",
+    params=None,
+    subtask=None,
 ):
-    """造一个够用的假样本。不 import UnifiedSample 是为了不牵扯整条数据链。"""
+    """造一个够用的假样本。不 import UnifiedSample 是为了不牵扯整条数据链。
+
+    `subtask` 不传时跟 `instruction` 一致——真实数据里指令**就是**子任务
+    （装载器把它写进 `instruction`，同时留一份在 `meta["subtask"]`）。
+    """
     base = {"raw_action_subtype": subtype} if subtype else {}
+    if raw_type:
+        base["raw_action_type"] = raw_type
+    base["subtask"] = instruction if subtask is None else subtask
     base.update(meta or {})
     return types.SimpleNamespace(
         sample_id=sample_id,
@@ -47,6 +58,7 @@ def _sample(
         resolution=resolution,
         point=point,
         bbox=bbox,
+        params=params or {},
         screenshot_path="/tmp/x.png",
         source_dataset="screenagent",
         action_type=_Kind(action_type),
@@ -96,11 +108,20 @@ class TestNormalizePoint:
 
 
 class TestTaskOf:
-    def test_取任务目标(self):
-        assert task_of(_sample(instruction="插入一个圆形")) == "插入一个圆形"
+    def test_取当前子任务(self):
+        """**不是会话级总目标。**
+
+        一个会话十几步共用一句总目标，实测 716 条只对应 169 个不重复指令，
+        「Insert a circle」出现 17 次却对应 17 个不同坐标——那是矛盾监督。
+        """
+        assert task_of(_sample(subtask="点击工具栏的圆形按钮")) == "点击工具栏的圆形按钮"
 
     def test_空任务返回空(self):
-        assert task_of(_sample(instruction="   ")) == ""
+        assert task_of(_sample(subtask="   ")) == ""
+
+    def test_取不到子任务时不退回总目标(self):
+        """**退回去等于把矛盾监督又放回训练集**，而条数看起来还是满的。"""
+        assert task_of(_sample(instruction="在互联网上查找冯·诺依曼", subtask="")) == ""
 
 
 class TestExecutableAction:
@@ -132,7 +153,7 @@ class TestBuildRecord:
         assert record is not None
         assert record["point_norm"] == [500, 500]
         assert record["point_px"] == [960, 540]
-        # 任务目标原样进指令，不再包装成「找到：xxx」
+        # 子任务原样进指令，不再包装成「找到：xxx」
         assert record["instruction"] == "在互联网上查找冯·诺依曼的相关信息"
 
     def test_输出格式与推理时一致(self):
@@ -155,14 +176,113 @@ class TestBuildRecord:
         assert record["bbox_px"] == [100, 100, 300, 300]
 
     def test_任务为空的样本丢掉(self):
-        """**不填占位符。** 没有任务目标的样本会教模型在缺信息时也硬输出动作。"""
-        assert build_record(_sample(instruction="")) is None
+        """**不填占位符。** 没有指令的样本会教模型在缺信息时也硬输出动作。"""
+        assert build_record(_sample(instruction="", subtask="")) is None
 
     def test_不可执行的动作丢掉(self):
         assert build_record(_sample(action_type="drag", subtype="drag")) is None
 
-    def test_既无_point_也无_bbox_丢掉(self):
+    def test_需要坐标的动作没有坐标就丢掉(self):
         assert build_record(_sample(point=None, bbox=None)) is None
+
+    def test_不需要坐标的动作没有坐标照样保留(self):
+        """**这是这次放宽的核心。**
+
+        以前这里无条件要求 `point` 不为 None，于是 `type` / `key` / `wait` /
+        `done` 即使通过了上游池子筛选，也会在这一行被第二次挡掉——
+        两道门，改一道等于没改。
+        """
+        record = build_record(
+            _sample(
+                action_type="type",
+                subtype="text",
+                raw_type="KeyboardAction",
+                point=None,
+                bbox=None,
+                params={"text": "冯诺依曼"},
+            )
+        )
+        assert record is not None
+        assert "point_norm" not in record
+        assert json.loads(record["answer"]) == {"action": "type", "text": "冯诺依曼"}
+
+    def test_done_是完成信号不是动作(self):
+        """`done` 不带 `action` 字段——`llm.parsing` 走的是 `DONE_KEYS` 分支。"""
+        record = build_record(
+            _sample(
+                action_type="other",
+                subtype="",
+                raw_type="EvaluateSubTaskAction",
+                point=None,
+                bbox=None,
+                params={"situation": "sub_task_success"},
+            )
+        )
+        assert record is not None
+        assert json.loads(record["answer"]) == {"done": True}
+
+    def test_训练输出能被真解析器读回来(self):
+        """**训练与推理同构的唯一靠谱证明方式：拿真解析器跑一遍。**
+
+        比对字符串只能证明"格式没变"，证明不了"推理时读得懂"。
+        `llm.parsing.PARAM_ALIASES` 会把 `key` 归一成 `keys`、`seconds` 归一
+        成 `duration`——训练时输出别名的话，模型学的是将来可能被改掉的名字。
+        """
+        from llm.parsing import parse_action_payload
+
+        cases = [
+            (_sample(), "left_click", {"x": 500, "y": 500}),
+            (
+                _sample(
+                    action_type="type",
+                    subtype="text",
+                    raw_type="KeyboardAction",
+                    point=None,
+                    params={"text": "你好"},
+                ),
+                "type",
+                {"text": "你好"},
+            ),
+            (
+                _sample(
+                    action_type="key",
+                    subtype="press",
+                    raw_type="KeyboardAction",
+                    point=None,
+                    params={"key": "Return"},
+                ),
+                "key",
+                {"keys": "Return"},
+            ),
+            (
+                _sample(
+                    action_type="wait",
+                    subtype="",
+                    raw_type="WaitAction",
+                    point=None,
+                    params={"seconds": 0.5},
+                ),
+                "wait",
+                {"duration": 0.5},
+            ),
+            (
+                _sample(
+                    action_type="scroll",
+                    subtype="scroll_down",
+                    raw_type="MouseAction",
+                    point=None,
+                    params={"direction": "down", "repeat": 3},
+                ),
+                "scroll",
+                {"direction": "down", "amount": 3},
+            ),
+        ]
+        for sample, want_type, want_params in cases:
+            record = build_record(sample)
+            assert record is not None, want_type
+            back = parse_action_payload(record["answer"])
+            assert back["action_type"] == want_type
+            assert back["params"] == want_params
 
     def test_分辨率缺失丢掉(self):
         assert build_record(_sample(resolution=(0, 0))) is None

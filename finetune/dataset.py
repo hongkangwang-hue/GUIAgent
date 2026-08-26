@@ -68,6 +68,8 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+from data.schema import ACTION_REQUIREMENTS, training_action
+
 logger = logging.getLogger(__name__)
 
 #: 冻结划分。M3 开工第一件事是核对这个文件的指纹。
@@ -79,24 +81,25 @@ OUT_DIR = Path("finetune/data")
 #: **训练坐标空间，与推理时必须一致。** 见模块 docstring。
 COORD_SPACE = (1000, 1000)
 
-#: 统一 schema 的动作类型 → 可执行动作名（`control.actions.ActionType`）。
-#: 不在表里的一律丢弃，见 docstring 的「只保留能执行的动作」。
-ACTION_MAP = {
-    "click": "left_click",
-    "double_click": "double_click",
-    "right_click": "right_click",
-    "move": "mouse_move",
-    "mouse_move": "mouse_move",
+#: 训练动作 → 输出 JSON 里除 `action` 外要带的键，以及从 `params` 的哪个键取值。
+#:
+#: **左边是推理时解析器认的名字，右边是装载器存的名字，两边不一样。**
+#: `llm.parsing.PARAM_ALIASES` 会把 `key` 归一成 `keys`、`seconds` 归一成
+#: `duration`——训练时就该直接输出归一后的名字，否则模型学的是别名，
+#: 而**别名将来可能被改掉**。`test_训练输出能被真解析器读回来` 钉住这件事。
+ANSWER_FIELDS: dict[str, tuple[tuple[str, str], ...]] = {
+    "left_click": (),
+    "double_click": (),
+    "right_click": (),
+    "mouse_move": (),
+    "type": (("text", "text"),),
+    "key": (("keys", "key"),),
+    "wait": (("duration", "seconds"),),
+    "scroll": (("direction", "direction"), ("amount", "repeat")),
 }
 
-#: 原始子类型 → 可执行动作名。`raw_action_subtype` 比统一 schema 的
-#: `action_type` 更细（后者把 move 归进了 `other`），优先用它。
-RAW_SUBTYPE_MAP = {
-    "click": "left_click",
-    "double_click": "double_click",
-    "right_click": "right_click",
-    "move": "mouse_move",
-}
+#: 需要坐标的动作。与 `data.schema.ACTION_REQUIREMENTS` 里标了 `"point"` 的一致。
+NEEDS_POINT = frozenset(name for name, needs in ACTION_REQUIREMENTS.items() if "point" in needs)
 
 
 def normalize_point(x: int, y: int, size: tuple[int, int]) -> tuple[int, int]:
@@ -115,22 +118,58 @@ def normalize_point(x: int, y: int, size: tuple[int, int]) -> tuple[int, int]:
 
 
 def executable_action(sample) -> str:
-    """样本对应哪个可执行动作。不可执行返回空串。"""
-    subtype = str((sample.meta or {}).get("raw_action_subtype", "")).strip().lower()
-    if subtype in RAW_SUBTYPE_MAP:
-        return RAW_SUBTYPE_MAP[subtype]
-    return ACTION_MAP.get(getattr(sample.action_type, "value", ""), "")
+    """样本对应哪个可执行动作。不可执行返回空串。
+
+    **判定口径来自 `data.schema.training_action`，这里不再自己维护一份表。**
+    2026-08-26 之前这里有 `ACTION_MAP` / `RAW_SUBTYPE_MAP` 两张表，而
+    `data.split` 那边只看有没有坐标——两处口径不一致，池子里有的样本在这里
+    被静默丢掉，两边的计数却都「看起来对」。
+
+    `plan` 不在这里返回：它是规划器的训练目标，不是执行器能执行的动作。
+    """
+    action = training_action(sample)
+    return action if action in ANSWER_FIELDS or action == "done" else ""
 
 
 def task_of(sample) -> str:
-    """这条样本的任务目标。
+    """这条样本的**指令**——即「这一步要干什么」。
 
-    ScreenAgent 的 `instruction` 就是会话级的任务描述
-    （`instruction_source` 恒为 `task_prompt`，实测 400/400）。
-    **空的样本丢掉而不是填占位符**——没有任务目标的样本会教模型
-    在缺信息时也硬输出一个动作。
+    ## 2026-08-26：这里以前用的是会话级总目标
+
+    原来返回 `sample.instruction`，而 ScreenAgent 的 `instruction` 恒为
+    `task_prompt`（会话级总目标）。一个会话十几步共用同一句话，于是
+    **716 条样本只对应 169 个不重复指令**，其中「Insert a circle」出现 17 次
+    却对应 17 个不同坐标——对模型是矛盾监督。
+
+    抽取在装载层完成（`data.loaders.screenagent._subtask_of`，那里才拿得到
+    全部语言变体）；这里只负责取用。
+
+    **取不到时返回空串，样本被丢弃**——不退回总目标。退回去等于把矛盾监督
+    又放回训练集，而且从计数上完全看不出来。
     """
-    return (sample.instruction or "").strip()
+    return str((sample.meta or {}).get("subtask") or "").strip()
+
+
+def build_answer(action: str, params: dict, point_norm: tuple[int, int] | None) -> str:
+    """这条样本的训练目标（模型该输出的那串 JSON）。
+
+    **格式与推理时解析器认的完全一致**，模型不必学两套。见 `ANSWER_FIELDS`
+    关于「输出归一后的键名而不是别名」的说明。
+
+    `done` 是唯一不带 `action` 的：它是完成信号不是动作，
+    `llm.parsing` 走的也是 `DONE_KEYS` 那条分支。
+    """
+    if action == "done":
+        return json.dumps({"done": True}, ensure_ascii=False)
+
+    payload: dict = {"action": action}
+    if point_norm is not None:
+        payload["x"], payload["y"] = point_norm
+    for out_key, src_key in ANSWER_FIELDS.get(action, ()):
+        value = params.get(src_key)
+        if value is not None:
+            payload[out_key] = value
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def build_record(sample) -> dict | None:
@@ -143,31 +182,43 @@ def build_record(sample) -> dict | None:
     if not action:
         return None
 
-    point = sample.point
-    if point is None and sample.bbox is not None:
-        point = sample.bbox.center
-    if point is None:
-        return None
-
     if not sample.resolution or sample.resolution[0] <= 0:
         return None
 
-    nx, ny = normalize_point(point.x, point.y, sample.resolution)
+    # 只有涉及坐标的动作才要坐标。**这里以前无条件要求 point 不为 None**，
+    # 于是 `type` / `key` / `wait` / `done` 即使通过了上游的池子筛选，
+    # 也会在这一行被第二次挡掉——两道门，改一道等于没改。
+    point_norm: tuple[int, int] | None = None
+    point = None
+    if action in NEEDS_POINT:
+        point = sample.point
+        if point is None and sample.bbox is not None:
+            point = sample.bbox.center
+        if point is None:
+            return None
+        point_norm = normalize_point(point.x, point.y, sample.resolution)
+
+    params = sample.params or {}
+    answer = build_answer(action, params, point_norm)
+
     record = {
         "sample_id": sample.sample_id,
         "image": str(sample.screenshot_path),
         "resolution": list(sample.resolution),
-        # 任务目标原样进提示词。训练时的问法与 executor 提示词一致
+        # 指令原样进提示词。训练时的问法与 executor 提示词一致
         "instruction": task,
         # 与 ActionIntent 的解析格式完全一致，模型不必学两套
-        "answer": json.dumps({"action": action, "x": nx, "y": ny}, ensure_ascii=False),
+        "answer": answer,
         "action": action,
-        "point_norm": [nx, ny],
-        "point_px": [point.x, point.y],
         "session_id": str((sample.meta or {}).get("session_id", "")),
         "action_index": (sample.meta or {}).get("action_index"),
         "source": sample.source_dataset,
     }
+    if point_norm is not None:
+        record["point_norm"] = list(point_norm)
+        record["point_px"] = [point.x, point.y]
+    if params:
+        record["params"] = params
     if sample.bbox is not None:
         record["bbox_px"] = [
             sample.bbox.left,
@@ -300,7 +351,11 @@ def main() -> int:
         print("  报告里要按动作类型分别给准确率，只报总体会被 click 一类主导。")
 
     if stats["dropped"]:
-        print("\n  丢弃的是拖拽（只有起点没有终点）与半个动作（down/up）。")
+        dropped = stats["dropped"]
+        total = sum(dropped.values()) if isinstance(dropped, dict) else dropped
+        print(f"\n  丢弃 {total} 条，绝大部分是 `plan` 样本——")
+        print("  它们不是执行器能执行的动作，是**规划器**的训练目标（「总目标 → 子任务列表」），")
+        print("  记录形状不同，由单独的构建流程处理。其余是拖拽（只有起点没有终点）与 down/up。")
         print("  **丢弃而不是硬凑**：拿只有起点的拖拽去训练，教出来的是「拖拽=点一下」。")
 
     if not args.check:

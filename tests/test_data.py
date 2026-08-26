@@ -21,7 +21,7 @@ from data.clean import DEFAULT_RULES, OPTIONAL_RULES, clean
 from data.loaders.screenagent import ScreenAgentLoader
 from data.loaders.screenspot import ScreenSpotLoader, ScreenSpotV2Loader
 from data.schema import ActionType, Platform, UnifiedSample, read_jsonl, write_jsonl
-from data.split import MAX_VAL_RATIO, FrozenSplit, freeze_split, grounding_pool
+from data.split import MAX_VAL_RATIO, FrozenSplit, freeze_split, training_pool
 from data.stats import collect, collect_by_dataset, overlap
 from perception.types import BBox, Point
 
@@ -235,11 +235,17 @@ def _screenagent_fixture(tmp_path, *, split: str = "train", suffix: str = "_tran
         "video_height": 768,
     }
 
-    def step(stamp: str, image: str, actions: list[dict]) -> None:
+    def step(stamp: str, image: str, actions: list[dict], subtask: str = "") -> None:
         _png(session / "images" / image, 1024, 768)
+        payload = {**base, "saved_image_name": image, "actions": actions}
+        if subtask:
+            # 真实标注里子任务写在 send_prompt 的这句话里，**中文那份是原文**
+            payload["send_prompt_zh"] = (
+                f"你对 Linux 操作系统非常熟悉。现在的子任务是「{subtask}」，"
+                "请根据当前屏幕状态给出下一步动作。"
+            )
         (session / f"{stamp}{suffix}.json").write_text(
-            json.dumps({**base, "saved_image_name": image, "actions": actions}),
-            encoding="utf-8",
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8"
         )
 
     # 规划步：只有 PlanAction，而且写在**另一张截图**上
@@ -249,6 +255,7 @@ def _screenagent_fixture(tmp_path, *, split: str = "train", suffix: str = "_tran
         [
             {"action_type": "PlanAction", "element": "the address bar"},
         ],
+        subtask="打开浏览器",
     )
     # 执行步：鼠标 + 键盘
     step(
@@ -267,6 +274,7 @@ def _screenagent_fixture(tmp_path, *, split: str = "train", suffix: str = "_tran
                 "keyboard_text": "hello",
             },
         ],
+        subtask="在地址栏输入网址",
     )
     # 评估步
     step(
@@ -275,6 +283,7 @@ def _screenagent_fixture(tmp_path, *, split: str = "train", suffix: str = "_tran
         [
             {"action_type": "EvaluateSubTaskAction", "situation": "sub_task_success"},
         ],
+        subtask="确认页面已打开",
     )
 
     other = "test" if split == "train" else "train"
@@ -293,20 +302,162 @@ def test_screenagent_mouse_position_width_height_are_x_y(tmp_path) -> None:
     assert click.point == Point(543, 133)
 
 
-def test_screenagent_instruction_is_always_the_task_prompt(tmp_path) -> None:
-    """指令一律取任务目标，**绝不取 `PlanAction.element`**。
+def test_screenagent_指令是当前子任务而不是总目标(tmp_path) -> None:
+    """**一个会话十几步共用一句总目标，那是矛盾监督。**
 
-    element 看着正是 grounding 想要的元素描述，但它写在另一步、配的是另一张
-    截图，而且中英混杂（实测 1168 条里 73% 中文，且该字段没有 _en/_zh 变体）。
-    拿它当指令会同时造成图文错配和语言污染，两样都不会报错。
+    实测：716 条样本只对应 169 个不重复指令，「Insert a circle」出现 17 次
+    却对应 17 个不同坐标。改取子任务后不重复指令涨到 1068 个。
+
+    仍然**绝不取 `PlanAction.element`**——它写在另一步、配的是另一张截图，
+    而且中英混杂（1168 条里 73% 中文，且该字段没有 _en/_zh 变体）。
     """
     _screenagent_fixture(tmp_path)
     samples = ScreenAgentLoader(root=tmp_path).run().samples
     click = next(s for s in samples if s.action_type is ActionType.CLICK)
 
-    assert click.instruction == "Find information about von Neumann"
-    assert click.meta["instruction_source"] == "task_prompt"
+    assert click.instruction == "在地址栏输入网址"
+    assert click.meta["instruction_source"] == "send_prompt_zh"
+    assert click.meta["task_prompt"] == "Find information about von Neumann"
     assert "plan_element" not in click.meta
+
+
+class TestKeysymTranslation:
+    """ScreenAgent 走 VNC，键名是 X11 keysym；本项目执行器用 pyautogui。
+
+    **不翻译的后果不止是执行失败。** `control.safety.rule_dangerous_keys`
+    靠按 `+` 切分来匹配危险组合键——喂进去未翻译的键名，危险键规则一条也
+    匹配不上，那是安全缺口。
+    """
+
+    def test_单键翻译(self):
+        from data.loaders.screenagent import _keys_of
+
+        assert _keys_of("Return") == "enter"
+        assert _keys_of("Escape") == "esc"
+        assert _keys_of("BackSpace") == "backspace"
+
+    def test_列表要合并成组合键(self):
+        """**323 条 press 里有 85 条是列表。**
+
+        不合并的话 `params["key"]` 会存成 ``"['Control_L', 'a']"`` —— Python
+        列表的字符串形式原样进训练目标，教模型输出它自己都解析不了的东西。
+        """
+        from data.loaders.screenagent import _keys_of
+
+        assert _keys_of(["Control_L", "a"]) == "ctrl+a"
+        assert _keys_of(["Control_L", "Shift_L", "`"]) == "ctrl+shift+`"
+        assert _keys_of(["Super_L", "r"]) == "win+r"
+
+    def test_已经是加号连接的原样归一(self):
+        from data.loaders.screenagent import _keys_of
+
+        assert _keys_of("Ctrl+S") == "ctrl+s"
+
+    def test_空值返回空串而不是_None_字面量(self):
+        from data.loaders.screenagent import _keys_of
+
+        assert _keys_of(None) == ""
+        assert _keys_of([]) == ""
+
+    def test_翻译后能被危险键规则读懂(self):
+        """这条才是真正要守的东西——**格式对不上时安全规则会静默失效**。"""
+        from control.actions import Action, ActionType
+        from control.safety import rule_dangerous_keys
+        from data.loaders.screenagent import _keys_of
+
+        verdict = rule_dangerous_keys(
+            Action(type=ActionType.KEY, keys=_keys_of(["Control_L", "a"]))
+        )
+        assert verdict.evidence in ("", "ctrl+a"), "规则拿到的应当是归一后的组合键"
+
+    def test_表里没有的原样小写透传(self):
+        """单字母与数字本来就一致，不该为它们各写一行。"""
+        from data.loaders.screenagent import _keys_of
+
+        assert _keys_of("F") == "f"
+        assert _keys_of("2") == "2"
+
+
+def test_screenagent_规划样本的指令是总目标而不是子任务(tmp_path) -> None:
+    """**指令取哪一句，取决于这条样本是给谁训的。**
+
+    规划器的活是「总目标 → 子任务列表」。给它子任务当指令等于把答案当题目。
+    一刀切要求子任务时，884 条 PlanAction 被挡到只剩 215 条——规划步的
+    `send_prompt` 问的是「请给出实施计划」，本来就没有「现在的子任务是」那句。
+    """
+    _screenagent_fixture(tmp_path)
+    samples = ScreenAgentLoader(root=tmp_path).run().samples
+    plan = next(s for s in samples if s.meta.get("raw_action_type") == "PlanAction")
+
+    assert plan.instruction == "Find information about von Neumann"
+    assert plan.meta["instruction_source"] == "task_prompt"
+
+    click = next(s for s in samples if s.action_type is ActionType.CLICK)
+    assert click.instruction != plan.instruction, "执行器与规划器不该拿到同一句指令"
+
+
+def test_screenagent_取不到子任务时留空而不是退回总目标(tmp_path) -> None:
+    """**退回总目标等于把矛盾监督又放回训练集**，而条数看起来还是满的。
+
+    实测 4012 条里有 669 条两个来源都取不到，这些必须被丢弃而不是补一句
+    总目标充数。
+    """
+    session = _screenagent_fixture(tmp_path)
+    for path in session.glob("*_translate.json"):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload.pop("send_prompt_zh", None)
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    # 规划样本不受影响——它的指令本来就是总目标，见上一条测试
+    samples = [
+        s
+        for s in ScreenAgentLoader(root=tmp_path).run().samples
+        if s.meta.get("raw_action_type") != "PlanAction"
+    ]
+    assert samples, "fixture 自己坏了"
+    assert all(not s.instruction for s in samples)
+    assert all(s.meta["instruction_source"] == "缺失" for s in samples)
+    from data.schema import is_trainable
+
+    assert not any(is_trainable(s) for s in samples), "没有指令的样本不该进训练池"
+
+
+def test_screenagent_子任务优先中文原文(tmp_path) -> None:
+    """英文那份是机翻且引号已经坏了：
+
+        Now the subtask is "enter" Von Neumann "as the search keyword".
+
+    按引号切会切出半句话。而且**部署时模型收到的就是中文**——
+    `tasks/basic_tasks.yaml` 写的是「打开 Microsoft Edge 浏览器」。
+    """
+    session = _screenagent_fixture(tmp_path)
+    path = next(session.glob("*19-33-28*.json"))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["send_prompt_en"] = 'Now the subtask is "enter" Von Neumann "as the keyword".'
+    payload["current_task"] = "Enter the URL in the address bar"
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    samples = ScreenAgentLoader(root=tmp_path).run().samples
+    click = next(s for s in samples if s.action_type is ActionType.CLICK)
+    assert click.instruction == "在地址栏输入网址"
+
+
+def test_screenagent_没有中文时退到_current_task(tmp_path) -> None:
+    """test 划分的原始文件里根本没有中文变体，639/639 靠这个字段。
+
+    **这构成 train / test 之间的指令语言差异，报告里必须写明。**
+    """
+    session = _screenagent_fixture(tmp_path)
+    path = next(session.glob("*19-33-28*.json"))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload.pop("send_prompt_zh", None)
+    payload["current_task"] = "Enter the URL in the address bar"
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    samples = ScreenAgentLoader(root=tmp_path).run().samples
+    click = next(s for s in samples if s.action_type is ActionType.CLICK)
+    assert click.instruction == "Enter the URL in the address bar"
+    assert click.meta["instruction_source"] == "current_task"
 
 
 def test_screenagent_keeps_plan_text_for_mode_b_reference(tmp_path) -> None:
@@ -319,14 +470,15 @@ def test_screenagent_keeps_plan_text_for_mode_b_reference(tmp_path) -> None:
     assert [s.meta["plan_element"] for s in plans] == ["the address bar"]
 
 
-def test_screenagent_language_option_is_not_polluted_by_plan_text(tmp_path) -> None:
-    """选 zh 时训练集里不该混进英文。
+def test_screenagent_指令里不混进_plan_的英文(tmp_path) -> None:
+    """`plan_element` 一旦被当成指令，语言就会被污染——它没有 _en/_zh 变体。
 
-    这条是 `plan_element` 一旦被当成指令就会破的——它没有语言变体。
+    子任务一律来自中文原文，所以整个训练集的指令语言是一致的。
     """
     _screenagent_fixture(tmp_path)
     samples = ScreenAgentLoader(root=tmp_path, language="zh").run().samples
-    assert all(s.instruction == "在网上查冯诺依曼的资料" for s in samples)
+    assert all(s.instruction for s in samples)
+    assert not any("address bar" in s.instruction for s in samples)
 
 
 def test_screenagent_excludes_rlhf_negatives(tmp_path) -> None:
@@ -489,21 +641,113 @@ def _pool(sessions: int, per_session: int) -> list[UnifiedSample]:
             point=Point(1, 1),
             bbox=None,
             screenshot_path=f"sess{s}.jpg",
-            meta={"session_id": f"sess{s}", "raw_action_type": "MouseAction"},
+            meta={
+                "session_id": f"sess{s}",
+                "raw_action_type": "MouseAction",
+                "raw_action_subtype": "click",
+            },
         )
         for s in range(sessions)
         for i in range(per_session)
     ]
 
 
-def test_grounding_pool_selects_only_coordinate_bearing_desktop_train() -> None:
+def _action(kind: str, subtype: str = "", **kwargs) -> UnifiedSample:
+    """一条 ScreenAgent 形状的样本。`kind` 是原始 `raw_action_type`。"""
+    meta = {"session_id": "s", "raw_action_type": kind, "raw_action_subtype": subtype}
+    meta.update(kwargs.pop("meta", {}))
+    return _sample(
+        source_dataset="screenagent",
+        split="train",
+        action_type=kwargs.pop("action_type", ActionType.OTHER),
+        bbox=None,
+        meta=meta,
+        **kwargs,
+    )
+
+
+def test_training_pool_只收目标场景的样本() -> None:
     samples = [
         *_pool(1, 2),
-        _sample(source_dataset="screenagent", split="train", bbox=None, point=None),
-        _sample(source_dataset="screenagent", split="test", point=Point(1, 1)),
-        _sample(source_dataset="screenspot", split="train", point=Point(1, 1)),
+        _action("MouseAction", "click", point=None),  # 缺坐标
+        _sample(source_dataset="screenagent", split="test", point=Point(1, 1)),  # 非 train
+        _sample(source_dataset="screenspot", split="train", point=Point(1, 1)),  # 非目标数据集
     ]
-    assert len(grounding_pool(samples)) == 2
+    assert len(training_pool(samples)) == 2
+
+
+def test_training_pool_收下没有坐标的动作() -> None:
+    """**这是这次放宽的全部意义。**
+
+    原过滤只有一行 `resolve_point() is not None`，于是 ScreenAgent 4012 条里
+    只剩 716 条——`type` / `key` / `done` / `wait` 全部落在门外，而端到端实测
+    查出来的瓶颈恰恰是训练集里 `type` 与 `done` 各为 0。
+    """
+    samples = [
+        _action("KeyboardAction", "text", point=None, params={"text": "冯诺依曼"}),
+        _action("KeyboardAction", "press", point=None, params={"key": "Return"}),
+        _action("EvaluateSubTaskAction", point=None, params={"situation": "sub_task_success"}),
+        _action("WaitAction", point=None, params={"seconds": 0.5}),
+        _action("MouseAction", "scroll_down", point=None, params={"direction": "down"}),
+        _action("PlanAction", point=None, params={"element": "打开浏览器"}),
+    ]
+    assert len(training_pool(samples)) == len(samples)
+
+
+def test_training_pool_丢掉缺参数的样本() -> None:
+    """**这是「字段齐不齐」，不是「样本好不好」。**
+
+    一条没带 `keyboard_text` 的 `type` 生成不出训练目标——留着它，模型学到的
+    是「该打字的时候输出空字符串」。
+    """
+    samples = [
+        _action("KeyboardAction", "text", point=None, params={}),
+        _action("KeyboardAction", "press", point=None, params={}),
+        _action("PlanAction", point=None, params={}),
+    ]
+    assert training_pool(samples) == []
+
+
+def test_training_pool_仍然丢掉_drag() -> None:
+    """ScreenAgent 的拖拽标注**只有起点没有终点**，构不成可执行的动作。
+
+    丢弃而不是硬凑——拿只有起点的拖拽去训练，教出来的是「拖拽 = 点一下」。
+    """
+    samples = [
+        _action("MouseAction", "drag", point=Point(1, 1)),
+        _action("MouseAction", "down", point=Point(1, 1)),
+        _action("MouseAction", "up", point=Point(1, 1)),
+    ]
+    assert training_pool(samples) == []
+
+
+def test_动作判定不能只看_action_type() -> None:
+    """`ActionType.OTHER` 底下同时混着三样完全不同的东西。
+
+    实测：`done` 1184 条、`plan` 1168 条、`mouse_move` 83 条，全是 `other`。
+    只看 `action_type` 会把它们当成同一类。
+    """
+    from data.schema import training_action
+
+    assert training_action(_action("EvaluateSubTaskAction")) == "done"
+    assert training_action(_action("PlanAction")) == "plan"
+    assert training_action(_action("MouseAction", "move")) == "mouse_move"
+
+
+def test_必需字段只有一份口径() -> None:
+    """`data.split` 与 `finetune.dataset` 必须读同一张表。
+
+    两处各写一份的话，一处放宽了另一处没跟着放宽，池子里有的样本会在生成
+    训练记录时被静默丢掉，而两边的计数都「看起来对」——**本项目栽过两次**。
+    """
+    import inspect
+
+    from data.schema import ACTION_REQUIREMENTS
+
+    assert ACTION_REQUIREMENTS["type"] == ("text",)
+    assert "ACTION_REQUIREMENTS" in inspect.getsource(
+        __import__("finetune.dataset", fromlist=["x"])
+    )
 
 
 def test_split_never_leaks_a_session_across_sides() -> None:

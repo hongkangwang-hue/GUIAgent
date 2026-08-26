@@ -96,6 +96,107 @@ class ActionType(str, Enum):
     OTHER = "other"
 
 
+#: 训练动作 → 它必须具备的字段。**唯一的一份口径**，`data.split` 与
+#: `finetune.dataset` 都从这里读。
+#:
+#: 两处各写一份的话，一处放宽了另一处没跟着放宽，池子里有的样本会在生成
+#: 训练记录时被静默丢掉，而两边的计数都"看起来对"——**本项目栽过两次**
+#: （提示词模板、屏幕分辨率）。
+#:
+#: `"point"` 是特殊值，表示需要 `resolve_point()` 拿得到坐标；其余都是
+#: `params` 里的键名。空元组表示这个动作不需要额外字段。
+ACTION_REQUIREMENTS: dict[str, tuple[str, ...]] = {
+    "left_click": ("point",),
+    "double_click": ("point",),
+    "right_click": ("point",),
+    "mouse_move": ("point",),
+    "scroll": ("direction",),
+    "type": ("text",),
+    "key": ("key",),
+    "wait": (),
+    #: 子任务完成信号。不是键鼠动作，但执行器必须学会在什么时候发出它——
+    #: M3 实测：模型不会发 `done`，于是每个子任务都跑到步数上限才停，
+    #: 中途撞上过登录框与密码导入对话框。**这是安全缺陷，不只是效率问题。**
+    "done": (),
+    #: 规划器的训练目标，不进执行器训练集。
+    "plan": ("element",),
+}
+
+#: ScreenAgent 的 `raw_action_subtype` → 训练动作名。
+#: 只在 `action_type` 粗粒度不够用时查这张表（`other` 底下混着三样东西）。
+_SUBTYPE_TO_ACTION = {
+    "click": "left_click",
+    "double_click": "double_click",
+    "right_click": "right_click",
+    "move": "mouse_move",
+    "scroll_up": "scroll",
+    "scroll_down": "scroll",
+    "text": "type",
+    "press": "key",
+}
+
+#: `raw_action_type` → 训练动作名。
+#:
+#: 前两个在 `action_type` 里都是 `other`，非查不可。`WaitAction` 靠粗粒度
+#: 类型也能对上，但仍然写在这里——**兜底路径能不能用取决于 `action_type`
+#: 的粒度，而那是为画图定的，不是为训练定的**。显式写死，粒度改了也不受影响。
+_RAW_TYPE_TO_ACTION = {
+    "EvaluateSubTaskAction": "done",
+    "PlanAction": "plan",
+    "WaitAction": "wait",
+}
+
+
+def training_action(sample: UnifiedSample) -> str:
+    """这条样本对应哪个训练动作。不可训练返回空串。
+
+    **`action_type` 一个人不够用。** 它有意是粗粒度的（见 `ActionType`
+    文档），`other` 底下同时混着 `done`（1184 条）、`plan`（1168 条）和
+    `mouse_move`（83 条）——三样完全不同的东西。所以先看原始标签。
+
+    `drag` 一律不可训练：ScreenAgent 的拖拽标注只有起点没有终点，
+    构不成可执行的动作。**丢弃而不是硬凑**——拿只有起点的拖拽去训练，
+    教出来的是「拖拽 = 点一下」。
+    """
+    meta = sample.meta or {}
+    raw_type = str(meta.get("raw_action_type") or "")
+    if raw_type in _RAW_TYPE_TO_ACTION:
+        return _RAW_TYPE_TO_ACTION[raw_type]
+
+    subtype = str(meta.get("raw_action_subtype") or "").lower()
+    if subtype in _SUBTYPE_TO_ACTION:
+        return _SUBTYPE_TO_ACTION[subtype]
+
+    # 没有原始标签时（非 ScreenAgent 来源）退回粗粒度类型
+    value = sample.action_type.value
+    if value == "click":
+        return "left_click"
+    return value if value in ACTION_REQUIREMENTS else ""
+
+
+def is_trainable(sample: UnifiedSample) -> bool:
+    """这条样本的字段是否齐全到可以生成一条训练记录。
+
+    **这是"字段齐不齐"，不是"样本好不好"。** 被判为 False 的样本没有质量
+    问题，只是缺了该动作必需的参数——比如一条 `type` 没带 `keyboard_text`。
+    """
+    action = training_action(sample)
+    if not action:
+        return False
+    # 每条训练记录都需要一句指令——**没有指令的样本会教模型在缺信息时
+    # 也硬输出一个动作**。ScreenAgent 的 `instruction` 是当前子任务（见该
+    # 装载器的 `_subtask_of`），取不到时为空，这里就把它挡住。
+    if not (sample.instruction or "").strip():
+        return False
+    for need in ACTION_REQUIREMENTS[action]:
+        if need == "point":
+            if sample.resolve_point() is None:
+                return False
+        elif not (sample.params or {}).get(need):
+            return False
+    return True
+
+
 @dataclass
 class UnifiedSample:
     """统一后的单条样本。
@@ -116,6 +217,17 @@ class UnifiedSample:
     bbox: BBox | None = None
     #: 绝对像素的目标点。为 None 时由 `resolve_point()` 从 bbox 中心补。
     point: Point | None = None
+    #: 坐标之外的动作参数。**没有它，非鼠标动作就只剩一个类型名，训不了。**
+    #:
+    #: 2026-08-26 补。此前本类只有 bbox / point 两个参数位，因为它写于
+    #: 「grounding 层」时期——那时坐标就是任务定义本身，别的参数无处可放也
+    #: 无人需要。目标改为动作生成后，`type` 的文本、`key` 的键名、`wait` 的
+    #: 秒数、`done` 的判定结果在装载时被静默丢弃，于是 4012 条样本里只有
+    #: 716 条能进训练。原始标注里这些字段一直都在。
+    #:
+    #: 各动作的键名见 `data.loaders.screenagent._params_of`。空 dict 表示
+    #: 这个动作除坐标外不需要参数（click / double_click / move）。
+    params: dict = field(default_factory=dict)
     app: str = ""
     #: 数据集自带的划分（test / train / …）。本项目自己的三分见 `data.split`，
     #: 那个写在独立的 split 文件里，不覆盖此字段——原始划分要留着对照。
@@ -197,6 +309,7 @@ class UnifiedSample:
             "split": self.split,
             "bbox": list(self.bbox.as_tuple()) if self.bbox else None,
             "point": list(self.point.as_tuple()) if self.point else None,
+            "params": self.params,
             "meta": self.meta,
         }
 
@@ -216,6 +329,7 @@ class UnifiedSample:
             split=payload.get("split", ""),
             bbox=BBox(*bbox) if bbox else None,
             point=Point(*point) if point else None,
+            params=payload.get("params", {}),
             meta=payload.get("meta", {}),
         )
 
