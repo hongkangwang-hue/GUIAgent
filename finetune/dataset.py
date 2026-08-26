@@ -203,7 +203,10 @@ def build_record(sample) -> dict | None:
 
     record = {
         "sample_id": sample.sample_id,
-        "image": str(sample.screenshot_path),
+        # **一律写正斜杠。** Windows 上生成的 `data\raw\...` 拿到 Linux 服务器
+        # 会被当成一个含反斜杠的文件名——图片一张都打不开，而报错指向
+        # 「文件不存在」，离根因很远。正斜杠两边都认。
+        "image": str(sample.screenshot_path).replace("\\", "/"),
         "resolution": list(sample.resolution),
         # 指令原样进提示词。训练时的问法与 executor 提示词一致
         "instruction": task,

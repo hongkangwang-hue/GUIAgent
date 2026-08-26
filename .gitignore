@@ -56,3 +56,9 @@ desktop.ini
 # 它记着划分指纹与动作分布，是报告要引的证据。
 finetune/data/*.jsonl
 finetune/outputs/
+
+# 交付用的压缩包是打包产物：目录本身入库，zip 由 Compress-Archive 现做。
+# **130 MB 的训练上传包尤其不能进** —— git 会永久保留每个 blob，
+# 提交一次仓库就再也瘦不回来了。
+delivery/*.zip
+gui-agent-train.zip

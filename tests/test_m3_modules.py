@@ -284,6 +284,16 @@ class TestBuildRecord:
             assert back["action_type"] == want_type
             assert back["params"] == want_params
 
+    def test_图片路径一律用正斜杠(self):
+        """**Windows 上生成的训练集要能拿到 Linux 服务器上跑。**
+
+        `data\raw\...` 在 Linux 上不是路径，是一个含反斜杠的文件名——
+        图片一张都打不开，而报错指向「文件不存在」，离根因很远。
+        正斜杠在 Windows 上同样有效。
+        """
+        record = build_record(_sample())
+        assert "\\" not in record["image"]
+
     def test_分辨率缺失丢掉(self):
         assert build_record(_sample(resolution=(0, 0))) is None
 
