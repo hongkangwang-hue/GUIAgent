@@ -2,6 +2,11 @@
 # 只放**快**的检查——慢的会让人养成 --no-verify 的习惯，那就白装了。
 # 测试不放这里，交给 CI。
 
+# delivery/ 是交付快照，内容逐字复制自源码目录。**钩子不能改它**——
+# 一改就和源码对不上，评审时无从判断哪份是真的（2026-08-26 踩过：
+# ruff-format 把副本重排成了 88 字符行宽，而仓库用的是 100）。
+exclude: '^delivery/'
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0

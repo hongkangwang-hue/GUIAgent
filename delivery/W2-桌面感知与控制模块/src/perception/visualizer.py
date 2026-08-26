@@ -33,10 +33,10 @@ FALLBACK_COLOR = (149, 165, 166)
 #: 中文字体候选，按优先级。找不到就退回 PIL 默认字体（中文会变方块，
 #: 但至少边界框还在，不至于整张图作废）
 FONT_CANDIDATES = (
-    r"C:\Windows\Fonts\msyh.ttc",  # 微软雅黑
+    r"C:\Windows\Fonts\msyh.ttc",      # 微软雅黑
     r"C:\Windows\Fonts\msyhl.ttc",
-    r"C:\Windows\Fonts\simhei.ttf",  # 黑体
-    r"C:\Windows\Fonts\simsun.ttc",  # 宋体
+    r"C:\Windows\Fonts\simhei.ttf",    # 黑体
+    r"C:\Windows\Fonts\simsun.ttc",    # 宋体
     "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
     "/System/Library/Fonts/PingFang.ttc",
 )
@@ -61,9 +61,8 @@ def _load_font(size: int):
                 logger.debug("字体 %s 加载失败：%s", path, exc)
 
     logger.warning(
-        "未找到中文字体（已尝试 %d 个候选），标签中的中文将显示为方块。平台：%s",
-        len(FONT_CANDIDATES),
-        sys.platform,
+        "未找到中文字体（已尝试 %d 个候选），标签中的中文将显示为方块。"
+        "平台：%s", len(FONT_CANDIDATES), sys.platform,
     )
     font = ImageFont.load_default()
     _font_cache[size] = font
@@ -148,10 +147,8 @@ def draw_legend(image: np.ndarray, stats: dict | None = None) -> np.ndarray:
     draw = ImageDraw.Draw(pil_image)
     font = _load_font(14)
 
-    lines = [
-        ("UIA（无障碍树）", SOURCE_COLORS[ElementSource.UIA]),
-        ("OCR（文字识别）", SOURCE_COLORS[ElementSource.OCR]),
-    ]
+    lines = [("UIA（无障碍树）", SOURCE_COLORS[ElementSource.UIA]),
+             ("OCR（文字识别）", SOURCE_COLORS[ElementSource.OCR])]
     if stats:
         summary = f"UIA {stats.get('uia_raw', 0)} + OCR {stats.get('ocr_raw', 0)} → 融合 {stats.get('fused', 0)}"
         lines.append((summary, (255, 255, 255)))

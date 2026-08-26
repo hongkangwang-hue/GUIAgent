@@ -64,10 +64,7 @@ class ActionBlocked(RuntimeError):
     """动作被安全规则拦截。"""
 
     def __init__(self, verdict: SafetyVerdict) -> None:
-        super().__init__(
-            f"[{verdict.rule}] {verdict.reason}"
-            + (f" — {verdict.evidence}" if verdict.evidence else "")
-        )
+        super().__init__(f"[{verdict.rule}] {verdict.reason}" + (f" — {verdict.evidence}" if verdict.evidence else ""))
         self.verdict = verdict
 
 
@@ -86,16 +83,8 @@ DANGEROUS_TEXT_PATTERNS: tuple[tuple[str, str, str], ...] = (
         "删除系统目录",
     ),
     ("rm_rf_root", r"\brm\s+-[rf]{1,2}\s+/(?:\s|$)|\brm\s+-rf\s+~", "递归删除根目录或家目录"),
-    (
-        "registry_hive",
-        r"\breg\s+delete\b[^\n]*\bHKLM\b|\bRemove-Item\b[^\n]*\bHKLM:",
-        "删除系统注册表项",
-    ),
-    (
-        "shadow_copy",
-        r"\bvssadmin\b[^\n]*\bdelete\s+shadows\b|\bwbadmin\s+delete\b",
-        "删除卷影副本或备份",
-    ),
+    ("registry_hive", r"\breg\s+delete\b[^\n]*\bHKLM\b|\bRemove-Item\b[^\n]*\bHKLM:", "删除系统注册表项"),
+    ("shadow_copy", r"\bvssadmin\b[^\n]*\bdelete\s+shadows\b|\bwbadmin\s+delete\b", "删除卷影副本或备份"),
     ("wipe", r"\bcipher\s+/w\b|\bsdelete\b", "擦除磁盘空闲空间"),
     ("bcd", r"\bbcdedit\b[^\n]*\b(?:delete|set)\b", "修改启动配置"),
     ("account", r"\bnet\s+user\b[^\n]*\/(?:delete|add)\b", "增删系统账户"),
@@ -104,11 +93,7 @@ DANGEROUS_TEXT_PATTERNS: tuple[tuple[str, str, str], ...] = (
         r"(?:Invoke-WebRequest|curl|wget)[^\n]*\|\s*(?:iex|Invoke-Expression|bash|sh)\b",
         "下载并直接执行远程脚本",
     ),
-    (
-        "disable_defender",
-        r"Set-MpPreference[^\n]*DisableRealtimeMonitoring\s*\$?true",
-        "关闭安全防护",
-    ),
+    ("disable_defender", r"Set-MpPreference[^\n]*DisableRealtimeMonitoring\s*\$?true", "关闭安全防护"),
 )
 
 #: 危险组合键。ctrl+alt+del 由系统直接接管，程序发不出去，列在这里只为记录意图。
@@ -161,9 +146,7 @@ def rule_dangerous_keys(action: Action) -> SafetyVerdict:
         return SafetyVerdict.allow()
     normalized = "+".join(part.strip().lower() for part in action.keys.split("+"))
     if normalized in DANGEROUS_KEY_COMBOS:
-        return SafetyVerdict.block(
-            "dangerous_keys", f"组合键 {normalized} 被禁止", evidence=normalized
-        )
+        return SafetyVerdict.block("dangerous_keys", f"组合键 {normalized} 被禁止", evidence=normalized)
     return SafetyVerdict.allow()
 
 
@@ -220,9 +203,7 @@ class SafetyGuard:
                     )
         return SafetyVerdict.allow()
 
-    def check_real_point(
-        self, point: Point, region_contains: Callable[[Point], bool]
-    ) -> SafetyVerdict:
+    def check_real_point(self, point: Point, region_contains: Callable[[Point], bool]) -> SafetyVerdict:
         """转换后的屏幕坐标是否仍在截图区域内。
 
         坐标转换本身会做夹取，因此正常情况下不会越界；这一层是防御性的

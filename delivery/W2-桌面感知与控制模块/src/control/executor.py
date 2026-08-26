@@ -197,26 +197,18 @@ class ActionExecutor:
                 )
             logger.debug(
                 "%s 坐标转换：模型(%d,%d) → 屏幕%s",
-                action.type.value,
-                action.x,
-                action.y,
-                real_point.as_tuple(),
+                action.type.value, action.x, action.y, real_point.as_tuple(),
             )
 
         result = ActionResult(
-            action=action,
-            success=False,
-            real_point=real_point,
-            real_point_to=real_point_to,
-            verdict=verdict,
+            action=action, success=False, real_point=real_point,
+            real_point_to=real_point_to, verdict=verdict,
         )
 
         # --- 分派 ---
         try:
             if self.dry_run:
-                logger.info(
-                    "[dry-run] %s → %s", action, real_point.as_tuple() if real_point else "—"
-                )
+                logger.info("[dry-run] %s → %s", action, real_point.as_tuple() if real_point else "—")
             else:
                 self._dispatch(action, real_point, real_point_to, result)
             result.success = True
@@ -230,9 +222,7 @@ class ActionExecutor:
 
         return self._finish(result, start)
 
-    def execute_all(
-        self, actions: list[Action], stop_on_failure: bool = True
-    ) -> list[ActionResult]:
+    def execute_all(self, actions: list[Action], stop_on_failure: bool = True) -> list[ActionResult]:
         """顺序执行多个动作。默认一步失败即停——GUI 操作有强顺序依赖，
         前一步没成功就往下走，后面全是无意义的点击。"""
         results = []
@@ -283,8 +273,7 @@ class ActionExecutor:
             pyautogui.mouseDown(button="left")
             try:
                 pyautogui.moveTo(
-                    point_to.x,
-                    point_to.y,
+                    point_to.x, point_to.y,
                     duration=max(self.move_duration, 0.4),
                     tween=pyautogui.easeInOutQuad,
                 )
@@ -324,9 +313,7 @@ class ActionExecutor:
         if point is None:
             return
         pyautogui = self._ensure_pyautogui()
-        pyautogui.moveTo(
-            point.x, point.y, duration=self.move_duration, tween=pyautogui.easeInOutQuad
-        )
+        pyautogui.moveTo(point.x, point.y, duration=self.move_duration, tween=pyautogui.easeInOutQuad)
 
     def _type_text(self, text: str, result: ActionResult) -> None:
         """经剪贴板输入文本，失败时退回逐字符输入（只对 ASCII 有效）。"""
