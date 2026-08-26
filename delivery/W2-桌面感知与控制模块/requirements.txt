@@ -1,0 +1,28 @@
+# 桌面感知与控制核心模块 —— 依赖
+#
+# 只跑单元测试的话，装前四行就够（215 个用例全过）。
+# 其余为真机验证脚本所需，缺失时相关代码路径自动降级，不会报错。
+
+# --- 单元测试必需 ---
+pytest>=8.0
+pytest-cov>=5.0
+numpy>=1.24
+pillow>=10.0
+
+# --- 截图与控制 ---
+mss>=9.0                  # 跨平台截图后端
+pyautogui>=0.9.54         # 鼠标键盘控制
+pyperclip>=1.8            # 中文输入走剪贴板通道（pyautogui 无法直接输入中文）
+dxcam>=0.0.5 ; sys_platform == "win32"    # Windows 低延迟截图，缺失时降级到 mss
+
+# --- OCR（两个至少装一个；本项目默认 PaddleOCR，选型依据见 docs/）---
+paddleocr>=3.0
+easyocr>=1.7
+opencv-python>=4.9        # OCR 预处理
+
+# --- UI Automation（仅 Windows；非 Windows 自动降级为 OCR 单通道）---
+pywinauto>=0.6.8 ; sys_platform == "win32"
+comtypes>=1.2 ; sys_platform == "win32"
+
+# --- 急停热键 ---
+pynput>=1.7

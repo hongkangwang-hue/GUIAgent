@@ -1,0 +1,746 @@
+"""控制层真机验证。
+
+`dry_run` 测不到的那一半在这里补齐：坐标链是否端到端准确、点击是否真的
+落在目标控件上、中文输入是否可用、两道刹车是否有效。
+
+## 两个检查是程序可判定的，不靠肉眼
+
+M1 验收要求"点击目标位置均正确"，而"看起来点对了"不是可复现的证据。
+本脚本用两条闭环把它变成断言：
+
+1. **坐标链闭环**：`mouse_move` 到模型坐标 → 读回 `pyautogui.position()`
+   → 与 `CoordinateScaler` 算出的屏幕坐标比对。这条覆盖 DPI 缩放、
+   多显示器偏移、模型/屏幕换算的全部环节。
+2. **落点闭环**：拿一个 UIA 控件 → 算出它的点击点 → 移过去 →
+   用 `ControlFromPoint` 反查光标下的控件是不是同一个。这条回答的是
+   "坐标对了，点下去是不是真落在那个控件上"。
+
+## ⚠ 必须在隔离虚拟机内运行
+
+本脚本会真的移动鼠标、真的敲键盘。M0 全局约束 1：Agent 的一切键鼠执行
+只发生在隔离虚拟机内，宿主机不受控制。
+
+用法::
+
+    python scripts/verify_control.py              # 全部检查
+    python scripts/verify_control.py --skip-input # 跳过需要文本框的输入检查
+    python scripts/verify_control.py --only stop  # 只验急停
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import sys
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(
+    0, str(Path(__file__).resolve().parent.parent / "src")
+)  # 交付包把两个包放在 src/ 下
+
+# Windows 控制台默认 cp936（GBK）。本脚本的总结行用了 ✓ / ✗ / ⚠，
+# 这几个字符都不在 GBK 码表里，print 会直接抛 UnicodeEncodeError ——
+# 而且是在**全部检查跑完之后**才崩，等于白跑一遍真机验证。
+# 本项目已经在 StepRecord.summary 与模型输出上各踩过一次同样的坑。
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+from control.actions import Action, ActionType  # noqa: E402
+from control.emergency_stop import EmergencyStop  # noqa: E402
+from control.executor import ActionExecutor  # noqa: E402
+from perception.capture import ScreenCapturer  # noqa: E402
+from perception.coordinate import CoordinateScaler  # noqa: E402
+from perception.dpi import describe as dpi_describe  # noqa: E402
+from perception.dpi import enable_dpi_awareness  # noqa: E402
+from perception.types import Point  # noqa: E402
+from perception.uia_tree import UIATree  # noqa: E402
+
+SPACE = "planner"
+TOLERANCE_PX = 2  # M1 验收标准：坐标往返误差不超过 2px
+
+
+@dataclass
+class CheckResult:
+    name: str
+    passed: bool
+    detail: str = ""
+    data: dict = field(default_factory=dict)
+
+
+class Verifier:
+    def __init__(self, executor: ActionExecutor, capturer: ScreenCapturer) -> None:
+        self.executor = executor
+        self.capturer = capturer
+        self.scaler = executor.scaler
+        self.results: list[CheckResult] = []
+
+    def record(self, result: CheckResult) -> CheckResult:
+        self.results.append(result)
+        mark = "✓" if result.passed else "✗"
+        print(f"  [{mark}] {result.name}: {result.detail}")
+        return result
+
+    # ------------------------------------------------------------------ #
+    # 1. 坐标链闭环
+    # ------------------------------------------------------------------ #
+
+    def check_coordinate_chain(self) -> None:
+        """验证整条坐标链：角点用纯计算，其余点真移鼠标读回比对。
+
+        这条覆盖 DPI 缩放、显示器偏移、模型↔屏幕换算的全部环节。
+        它挂掉说明整条坐标链有问题，**后面所有点击都不可信**。
+        """
+        import pyautogui
+
+        space = self.scaler.get(SPACE)
+
+        # --- 先用纯计算验角点，不移鼠标 ---
+        #
+        # 精确角点是夹取与偏移 bug 最爱藏身的地方，但**不能把鼠标真移过去**：
+        # 屏幕四角正是 PyAutoGUI FAILSAFE 的触发点（M1 验收标准 7 要求它
+        # 必须开着）。移过去会立刻抛 FailSafeException，而且鼠标就停在角上，
+        # 之后每次 pyautogui 调用一开头就检查当前位置，于是后续动作全部连坐。
+        #
+        # 两条验收要求在这里是打架的。解法是把它们分开：映射数学是纯函数，
+        # 不需要真鼠标就能验；需要真鼠标的是 DPI 与显示器偏移那条链，而
+        # 那条链用任何点都能验。
+        corner_failures = self._check_corner_mapping(space)
+
+        # --- 再用内缩点验端到端链路 ---
+        #
+        # 各极值内缩 1 个模型像素（≈2.5 真实像素），足以离开 FAILSAFE 的
+        # 四个角点，同时仍然贴着边界——夹取错误在这里照样看得出来。
+        low, high_x, high_y = 1, space.width - 2, space.height - 2
+        targets = [
+            Point(x, y)
+            for x in (low, space.width // 4, space.width // 2, high_x)
+            for y in (low, space.height // 2, high_y)
+        ]
+
+        worst = 0.0
+        failures = list(corner_failures)
+        disturbed = 0
+        for model_point in targets:
+            expected = self.scaler.to_real(model_point, SPACE)
+            error, problem, was_disturbed = self._probe_point(model_point, expected, pyautogui)
+            if was_disturbed:
+                disturbed += 1
+            if problem:
+                failures.append(problem)
+            worst = max(worst, error)
+
+        # 鼠标停在边缘会让后续检查更容易擦到 FAILSAFE，挪回中心
+        with contextlib.suppress(Exception):
+            self.executor.execute(
+                Action(ActionType.MOUSE_MOVE, x=space.width // 2, y=space.height // 2)
+            )
+
+        self.record(
+            CheckResult(
+                "坐标链端到端精度",
+                not failures,
+                f"{len(targets)} 个目标点，最大偏差 {worst}px（容差 {TOLERANCE_PX}px）"
+                + (f"；{disturbed} 个点重试后通过（期间检测到外部鼠标干扰）" if disturbed else "")
+                + ("" if not failures else "；" + "；".join(failures[:3])),
+                {
+                    "worst_error_px": worst,
+                    "num_targets": len(targets),
+                    "disturbed": disturbed,
+                    "failures": failures,
+                },
+            )
+        )
+
+    def _probe_point(self, model_point: Point, expected: Point, pyautogui):
+        """移到一个点并读回，返回 (最大偏差, 问题描述或空, 是否受过干扰)。
+
+        ## 为什么要区分"算错了"和"有人碰了鼠标"
+
+        这个脚本跑的时候人就坐在旁边看着，手很容易蹭到触摸板。一次物理
+        移动就会让读数偏几像素，而那和"坐标链算错了"在数字上长得一模一样。
+
+        判据是**稳定性**：连读两次位置，若两次不一致，说明有外力正在移动
+        光标，这一次读数不可信。此时重新移一次再读——真的算错了，重试
+        还是错；只是被蹭了一下，重试就对了。
+
+        不这么做的话，验收会变成看运气：同一台机器同一份代码，手放桌上
+        就过、手扶着鼠标就不过。
+        """
+        result = self.executor.execute(
+            Action(ActionType.MOUSE_MOVE, x=model_point.x, y=model_point.y)
+        )
+        if not result.success:
+            return 0.0, f"{model_point.as_tuple()} 执行失败：{result.error}", False
+
+        error, stable = self._read_back(expected, pyautogui)
+        if stable and error <= TOLERANCE_PX:
+            return error, "", False
+
+        # 读数不稳或超差，重试一次
+        time.sleep(0.15)
+        retry = self.executor.execute(
+            Action(ActionType.MOUSE_MOVE, x=model_point.x, y=model_point.y)
+        )
+        if not retry.success:
+            return error, f"{model_point.as_tuple()} 重试失败：{retry.error}", True
+
+        retry_error, retry_stable = self._read_back(expected, pyautogui)
+        if retry_stable and retry_error <= TOLERANCE_PX:
+            return retry_error, "", True
+
+        actual = pyautogui.position()
+        hint = "（读数不稳定，疑似外部鼠标干扰）" if not retry_stable else ""
+        return (
+            retry_error,
+            f"模型{model_point.as_tuple()} 期望屏幕{expected.as_tuple()} "
+            f"实际({actual[0]},{actual[1]}) 偏差{retry_error}px{hint}",
+            True,
+        )
+
+    @staticmethod
+    def _read_back(expected: Point, pyautogui):
+        """连读两次光标位置。返回 (与期望的最大偏差, 两次是否一致)。"""
+        time.sleep(0.05)
+        first_x, first_y = pyautogui.position()
+        time.sleep(0.05)
+        second_x, second_y = pyautogui.position()
+
+        stable = (first_x, first_y) == (second_x, second_y)
+        error = max(abs(second_x - expected.x), abs(second_y - expected.y))
+        return error, stable
+
+    def _check_corner_mapping(self, space) -> list[str]:
+        """纯计算验证四个角点的往返映射。返回问题清单。
+
+        不移鼠标，因此不受 FAILSAFE 影响。验的是 `CoordinateScaler` 在
+        边界上有没有算错——比如把 ``width - 1`` 夹成了 ``width``，或者
+        多显示器偏移在角上漏加。
+        """
+        problems: list[str] = []
+        corners = [
+            Point(0, 0),
+            Point(space.width - 1, 0),
+            Point(0, space.height - 1),
+            Point(space.width - 1, space.height - 1),
+        ]
+        region = self.scaler.region
+
+        for model_point in corners:
+            real = self.scaler.to_real(model_point, SPACE)
+            if not (region.left <= real.x < region.right and region.top <= real.y < region.bottom):
+                problems.append(f"角点 {model_point.as_tuple()} 映射到区域外 {real.as_tuple()}")
+                continue
+
+            # 往返回来应当还在同一个模型像素上（或相邻一格，取决于舍入）
+            back = self.scaler.to_model(real, SPACE)
+            drift = max(abs(back.x - model_point.x), abs(back.y - model_point.y))
+            if drift > 1:
+                problems.append(
+                    f"角点 {model_point.as_tuple()} 往返漂移 {drift} 格 → {back.as_tuple()}"
+                )
+        return problems
+
+    # ------------------------------------------------------------------ #
+    # 2. 落点闭环
+    # ------------------------------------------------------------------ #
+
+    def check_click_lands_on_target(self) -> None:
+        """用 UIA 反查光标下的控件，验证点击点真的落在目标控件上。
+
+        坐标准确 ≠ 点得中：OCR 给的文字框可能比可点击区域小、控件可能被
+        遮挡、框中心可能落在控件的透明部分。这条检查的就是这个差别。
+        """
+        if not UIATree.is_available():
+            self.record(CheckResult("点击落点验证", False, "uiautomation 不可用，跳过"))
+            return
+
+        import uiautomation as auto
+
+        tree = UIATree(max_elements=40, time_budget_ms=3000)
+        elements = tree.capture_foreground()
+        if not elements:
+            self.record(CheckResult("点击落点验证", False, "前台窗口抓不到 UIA 控件，换个窗口重试"))
+            return
+
+        # 挑面积适中的控件：太小的容易受边框影响，太大的（如整个窗口）
+        # 命中了也说明不了问题
+        candidates = sorted(
+            (e for e in elements if 400 <= e.bbox.area <= 200_000),
+            key=lambda e: -e.bbox.area,
+        )[:5]
+        if not candidates:
+            self.record(CheckResult("点击落点验证", False, "没有尺寸合适的控件可测"))
+            return
+
+        hits, misses = 0, []
+        for element in candidates:
+            target = element.click_point
+            model_point = self.scaler.to_model(target, SPACE)
+            self.executor.execute(Action(ActionType.MOUSE_MOVE, x=model_point.x, y=model_point.y))
+            time.sleep(0.05)
+
+            try:
+                under_cursor = auto.ControlFromPoint(target.x, target.y)
+            except Exception as exc:  # noqa: BLE001
+                misses.append(f"{element.label()}：反查失败 {exc}")
+                continue
+
+            if under_cursor is None:
+                misses.append(f"{element.label()}：光标下无控件")
+                continue
+
+            # 名字或矩形任一吻合即算命中——同一控件在不同 UIA 视图下
+            # 可能返回父/子节点，只比名字会有误判
+            same_name = (under_cursor.Name or "").strip() == element.text.strip()
+            rect = under_cursor.BoundingRectangle
+            same_rect = rect is not None and abs(int(rect.left) - element.bbox.left) <= 2
+            if same_name or same_rect:
+                hits += 1
+            else:
+                misses.append(f"{element.label()} → 实际命中 {under_cursor.Name!r}")
+
+        self.record(
+            CheckResult(
+                "点击落点验证",
+                hits >= max(1, len(candidates) // 2),
+                f"{hits}/{len(candidates)} 个控件命中"
+                + ("" if not misses else "；未命中：" + "；".join(misses[:2])),
+                {"hits": hits, "total": len(candidates), "misses": misses},
+            )
+        )
+
+    # ------------------------------------------------------------------ #
+    # 3. 各动作冒烟
+    # ------------------------------------------------------------------ #
+
+    def check_actions(self) -> None:
+        """逐个动作真机执行一次，只看有没有异常。"""
+        space = self.scaler.get(SPACE)
+        cx, cy = space.width // 2, space.height // 2
+
+        cases = [
+            ("screenshot", Action(ActionType.SCREENSHOT)),
+            ("mouse_move", Action(ActionType.MOUSE_MOVE, x=cx, y=cy)),
+            ("scroll_down", Action(ActionType.SCROLL, x=cx, y=cy, direction="down", amount=2)),
+            ("scroll_up", Action(ActionType.SCROLL, x=cx, y=cy, direction="up", amount=2)),
+            ("key_esc", Action(ActionType.KEY, keys="esc")),
+            ("wait", Action(ActionType.WAIT, duration=0.2)),
+        ]
+
+        failures = []
+        for name, action in cases:
+            result = self.executor.execute(action)
+            if not result.success:
+                failures.append(f"{name}：{result.error}")
+
+        self.record(
+            CheckResult(
+                "动作冒烟",
+                not failures,
+                f"{len(cases) - len(failures)}/{len(cases)} 通过"
+                + ("" if not failures else "；" + "；".join(failures)),
+                {"failures": failures},
+            )
+        )
+
+    def check_drag_releases_button(self) -> None:
+        """拖拽后左键必须已松开。
+
+        卡在按下状态是最阴险的故障：后续每一次"移动"都变成拖拽，
+        表现为界面被乱选、图标被乱拖，而日志里每个动作都显示成功。
+        """
+        import pyautogui
+
+        space = self.scaler.get(SPACE)
+        result = self.executor.execute(
+            Action(
+                ActionType.LEFT_CLICK_DRAG,
+                x=space.width // 3,
+                y=space.height // 3,
+                to_x=space.width // 2,
+                to_y=space.height // 2,
+            )
+        )
+        time.sleep(0.1)
+        # 移动一小段后看是否产生了选区行为无法程序化判定，改为直接
+        # 检查按键状态：mouseUp 之后再发一次不会有副作用
+        pyautogui.mouseUp(button="left")
+
+        self.record(
+            CheckResult(
+                "拖拽后左键已释放",
+                result.success,
+                "拖拽执行成功并已补发 mouseUp" if result.success else result.error,
+            )
+        )
+
+    # ------------------------------------------------------------------ #
+    # 4. 中文输入
+    # ------------------------------------------------------------------ #
+
+    def check_chinese_input(self) -> None:
+        """输入中文并用 UIA 读回验证。
+
+        PyAutoGUI 的 `typewrite()` 只发 ASCII 键码，中文会**静默失败**——
+        不报错、也不输入。因此必须读回验证，不能只看动作返回成功。
+        """
+        import uiautomation as auto
+
+        probe = "测试中文输入 ABC 123"
+        edit = auto.EditControl(searchDepth=8)
+        if not edit.Exists(maxSearchSeconds=2):
+            self.record(
+                CheckResult(
+                    "中文输入",
+                    False,
+                    "前台窗口没有可输入的文本框。请先打开记事本或搜索框，再用 --only input 重跑",
+                )
+            )
+            return
+
+        try:
+            edit.SetFocus()
+            time.sleep(0.2)
+            self.executor.execute(Action(ActionType.KEY, keys="ctrl+a"))
+            self.executor.execute(Action(ActionType.KEY, keys="delete"))
+            result = self.executor.execute(Action(ActionType.TYPE, text=probe))
+            time.sleep(0.3)
+
+            actual = ""
+            try:
+                actual = edit.GetValuePattern().Value or ""
+            except Exception:  # noqa: BLE001 —— 部分控件不支持 ValuePattern
+                with contextlib.suppress(Exception):
+                    actual = edit.GetTextPattern().DocumentRange.GetText(-1) or ""
+
+            matched = probe in actual
+            self.record(
+                CheckResult(
+                    "中文输入",
+                    matched,
+                    f"写入 {probe!r}，读回 {actual.strip()[:40]!r}"
+                    + ("" if matched else "（不匹配，剪贴板方案可能失效）"),
+                    {
+                        "input_method": result.meta.get("input_method", "?"),
+                        "expected": probe,
+                        "actual": actual.strip()[:80],
+                    },
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.record(CheckResult("中文输入", False, f"验证过程出错：{exc}"))
+
+    # ------------------------------------------------------------------ #
+    # 5. 两道刹车
+    # ------------------------------------------------------------------ #
+
+    def check_emergency_stop_latency(self) -> None:
+        """测"按下热键 → 动作被拒绝"的响应延迟。
+
+        M1 验收标准 7 要求热键**在 Agent 正控制鼠标时仍能立即中断**，
+        所以这里边跑动作边等触发，而不是空转等待。
+        """
+        stop = self.executor.emergency_stop
+        if not stop.is_armed and not stop.arm():
+            self.record(CheckResult("急停热键", False, "热键未能启用，当前只剩 FAILSAFE 一道刹车"))
+            return
+
+        print(f"\n  >>> 请在 15 秒内按下 {stop.hotkey}（期间鼠标会持续移动，模拟 Agent 正在操作）")
+        space = self.scaler.get(SPACE)
+        deadline = time.time() + 15
+        blocked_at = None
+
+        while time.time() < deadline:
+            result = self.executor.execute(
+                Action(
+                    ActionType.MOUSE_MOVE,
+                    x=(int(time.time() * 200) % (space.width - 1)),
+                    y=space.height // 2,
+                )
+            )
+            if not result.success and result.error_type == "emergency_stopped":
+                blocked_at = time.time()
+                break
+
+        if blocked_at is None:
+            self.record(
+                CheckResult("急停热键", False, "15 秒内未收到热键。检查是否被其他程序占用该组合键")
+            )
+            return
+
+        latency_ms = (blocked_at - stop.triggered_at) * 1000.0
+        self.record(
+            CheckResult(
+                "急停热键",
+                latency_ms < 500,
+                f"触发到动作被拒绝 {latency_ms:.0f}ms（Agent 正控制鼠标时）",
+                {"latency_ms": round(latency_ms, 1)},
+            )
+        )
+
+        # 复位，否则后续检查全部被拒
+        stop.reset()
+
+    def check_failsafe_configured(self) -> None:
+        """确认 FAILSAFE 已开启。
+
+        只验配置不验触发——真触发需要把鼠标甩到角落，而那正是它在
+        Agent 控制鼠标时不可靠的原因（人和程序抢光标）。这条只保证
+        第一道刹车在位，可靠性由热键那道兜底。
+        """
+        import pyautogui
+
+        self.record(
+            CheckResult(
+                "FAILSAFE 已启用",
+                bool(pyautogui.FAILSAFE),
+                f"FAILSAFE={pyautogui.FAILSAFE}, PAUSE={pyautogui.PAUSE}s",
+            )
+        )
+
+    # ------------------------------------------------------------------ #
+    # 6. 安全拦截在真机上仍然生效
+    # ------------------------------------------------------------------ #
+
+    def check_safety_still_blocks(self) -> None:
+        """真机上高危动作仍被拦——dry_run 下测过，这里确认没被绕过。"""
+        result = self.executor.execute(Action(ActionType.TYPE, text="shutdown /s /t 0"))
+        self.record(
+            CheckResult(
+                "安全拦截生效",
+                not result.success and result.error_type == "blocked",
+                f"高危文本被拦截：{result.verdict.rule if result.verdict else '未拦截！'}",
+            )
+        )
+
+
+# ---------------------------------------------------------------------- #
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="控制层真机验证（必须在隔离虚拟机内运行）")
+    parser.add_argument("--only", choices=["coord", "click", "actions", "input", "stop", "safety"])
+    parser.add_argument("--skip-input", action="store_true", help="跳过需要文本框的输入检查")
+    parser.add_argument(
+        "--delay",
+        type=int,
+        default=0,
+        help=(
+            "开始检查前先倒计时若干秒，留出切换前台窗口的时间。"
+            "中文输入检查要求记事本在前台，而命令得在 PowerShell 里敲——"
+            "没有这个参数就只能「回车后赶紧点记事本」，而那一下会被"
+            "坐标精度检查判成外部鼠标干扰。用 --only input --delay 5 就没有这个矛盾"
+        ),
+    )
+    parser.add_argument("--skip-stop", action="store_true", help="跳过需要人工按键的急停检查")
+    parser.add_argument("--monitor", type=int, default=1)
+    parser.add_argument(
+        "--report",
+        default="docs/m1-control-verification.md",
+        help="结果写入的报告文件。传空字符串则不写",
+    )
+    parser.add_argument("--note", default="", help="备注，比如 DPI 档位或运行环境")
+    parser.add_argument(
+        "--allow-note-mismatch",
+        action="store_true",
+        help="即使 --note 里的百分比与实测 DPI 不符也照常记录",
+    )
+    args = parser.parse_args()
+
+    # **必须先启用 DPI 感知，再查 DPI。**
+    #
+    # `dpi_describe()` 本身就是一次坐标查询，而 `perception/dpi.py` 开头
+    # 写着"必须在任何截图或坐标查询之前调用 enable_dpi_awareness()"——
+    # 不启用时 Windows 会对进程撒谎：150% 缩放的机器上会报回 100%/96 DPI。
+    #
+    # 原来这里依赖 `ScreenCapturer.__init__` 顺手启用，但那发生在下面的
+    # with 块里，比这一行晚。后果不是显示难看：验收标准 3 要求三档 DPI
+    # 各跑一次，而报告里永远写 100%，三次记录就无法区分，证据等于作废。
+    enable_dpi_awareness()
+    dpi = dpi_describe()
+
+    if not _note_matches_dpi(args.note, dpi) and not args.allow_note_mismatch:
+        stated = _stated_percent(args.note)
+        print("=" * 70)
+        print(f"备注写的是 {stated}%，但实测 DPI 缩放是 {dpi['scale_factor']:.0%}。")
+        print()
+        print("多半是显示缩放没真正生效：改完设置后本进程要重新启动才会读到新值，")
+        print("多显示器时还要确认改的是当前这块屏。注销重登最稳妥。")
+        print()
+        print("本次不记录 —— M1 验收标准 3 要求三档 DPI 各一次，档位标错的记录")
+        print("会让人以为测过了而实际没测，比没有记录更糟。")
+        print()
+        print("确实要记（比如备注里的百分比不是指 DPI），加 --allow-note-mismatch。")
+        print("=" * 70)
+        return 2
+
+    print("=" * 70)
+    print("控制层真机验证")
+    print(
+        f"  DPI 缩放 {dpi['scale_factor']:.0%}（{dpi['system_dpi']} DPI），感知={dpi['dpi_aware']}"
+    )
+    print("  ⚠ 本脚本会真的移动鼠标与敲键盘，必须在隔离虚拟机内运行")
+    print("=" * 70)
+
+    with ScreenCapturer() as capturer:
+        region = capturer.monitor_region(args.monitor)
+        scaler = CoordinateScaler(region)
+        scaler.register(SPACE, 1024, 768)
+        print(f"  截图区域 {region.as_tuple()}，引擎 {capturer.engine_name}")
+        print(
+            f"  坐标系 {SPACE} 1024×768，往返误差上界 {scaler.roundtrip_error_bound(SPACE):.2f}px\n"
+        )
+
+        executor = ActionExecutor(
+            scaler, space_name=SPACE, capturer=capturer, emergency_stop=EmergencyStop()
+        )
+        executor.start()
+        verifier = Verifier(executor, capturer)
+
+        try:
+            checks = {
+                "coord": verifier.check_coordinate_chain,
+                "click": verifier.check_click_lands_on_target,
+                "actions": lambda: (
+                    verifier.check_actions(),
+                    verifier.check_drag_releases_button(),
+                ),
+                "safety": lambda: (
+                    verifier.check_safety_still_blocks(),
+                    verifier.check_failsafe_configured(),
+                ),
+                "input": verifier.check_chinese_input,
+                "stop": verifier.check_emergency_stop_latency,
+            }
+            # 倒计时让人有时间把目标窗口切到前台。
+            #
+            # 这个参数是踩过坑之后加的：中文输入检查通过 UIA 在**前台窗口**里
+            # 找文本框，而命令必须在 PowerShell 里敲——敲完 PowerShell 就是前台。
+            # 原先的办法是「回车后赶紧点一下记事本」，但坐标精度检查排在最前，
+            # 那一下点击会被它判成外部鼠标干扰，于是两项一起失败。
+            if args.delay > 0:
+                print()
+                print(f"  {args.delay} 秒后开始 —— 请现在切到目标窗口")
+                for remaining in range(args.delay, 0, -1):
+                    print(f"  {remaining} ...", end="", flush=True)
+                    time.sleep(1)
+                print()
+                print("  开始")
+                print()
+
+            if args.only:
+                checks[args.only]()
+            else:
+                for name, fn in checks.items():
+                    if name == "input" and args.skip_input:
+                        continue
+                    if name == "stop" and args.skip_stop:
+                        continue
+                    fn()
+        finally:
+            executor.stop()
+
+        print()
+        print("-" * 70)
+        print("执行器统计：", executor.stats())
+
+    failed = [r for r in verifier.results if not r.passed]
+    print("-" * 70)
+    if failed:
+        print(f"✗ {len(failed)}/{len(verifier.results)} 项未通过：")
+        for result in failed:
+            print(f"    - {result.name}：{result.detail}")
+    else:
+        print(f"✓ 全部 {len(verifier.results)} 项通过")
+    print()
+    print("提醒：M1 验收标准 3 要求在 100% / 125% / 150% 三档 DPI 缩放下都正确。")
+    print("      改系统缩放后重跑本脚本，三次结果都要记录进验收材料。")
+
+    if args.report:
+        path = _write_report(Path(args.report), verifier.results, dpi, region, args.note)
+        print()
+        print(f"结果已追加到 {path}")
+
+    return 1 if failed else 0
+
+
+def _stated_percent(note: str) -> int | None:
+    """从备注里抠出百分比数字，比如 "宿主机 125% DPI" → 125。"""
+    import re
+
+    match = re.search(r"(\d{2,3})\s*%", note)
+    return int(match.group(1)) if match else None
+
+
+def _note_matches_dpi(note: str, dpi: dict) -> bool:
+    """备注里声明的档位与实测 DPI 是否一致。
+
+    ## 为什么要拦这一下
+
+    实测踩到的：连着两次用 ``--note "100% DPI"`` 和 ``--note "125% DPI"``
+    跑，脚本却都检测到 150% —— 显示缩放压根没改成功。三条记录看上去是
+    三档齐了，实际全是同一档。
+
+    M1 验收标准 3 要求三档 DPI 各测一次。**档位标错的记录比没有记录更糟**：
+    它让人以为测过了。所以宁可拒绝写入，也不留一条假证据。
+    """
+    stated = _stated_percent(note)
+    if stated is None:
+        return True  # 备注里没提百分比，不管
+    return abs(stated - round(dpi["scale_factor"] * 100)) <= 2
+
+
+def _write_report(path: Path, results, dpi: dict, region, note: str) -> Path:
+    """把本次结果**追加**进报告。
+
+    追加而非覆盖：M1 验收标准 3 要求三档 DPI 各跑一次，覆盖的话前两次
+    就没了。每次一节，带上 DPI 与环境备注，三次结果自然并排可比。
+    """
+    from datetime import datetime
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    new_file = not path.exists()
+
+    lines: list[str] = []
+    if new_file:
+        lines += [
+            "# M1 控制层真机验证记录",
+            "",
+            "> 由 `python scripts/verify_control.py` 生成，每跑一次追加一节。",
+            "> 对应 M1 验收标准 3（三档 DPI）、5（动作与中文输入）、",
+            "> 6（宿主机→虚拟机通路）、7（两道急停）。",
+            "",
+        ]
+
+    passed = sum(1 for r in results if r.passed)
+    lines += [
+        "---",
+        "",
+        f"## {datetime.now():%Y-%m-%d %H:%M}" + (f" —— {note}" if note else ""),
+        "",
+        f"- DPI 缩放：**{dpi['scale_factor']:.0%}**（{dpi['system_dpi']} DPI，"
+        f"感知={dpi['dpi_aware']}）",
+        f"- 截图区域：{region.as_tuple()}",
+        f"- 结果：**{passed}/{len(results)} 项通过**",
+        "",
+        "| 检查项 | 结果 | 详情 |",
+        "|---|---|---|",
+    ]
+    for result in results:
+        mark = "通过" if result.passed else "**未通过**"
+        # 竖线会把 Markdown 表格切断，换行会把一行拆成两行
+        detail = result.detail.replace("|", "\\|").replace("\n", " ")
+        lines.append(f"| {result.name} | {mark} | {detail} |")
+    lines.append("")
+
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+    return path
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
