@@ -146,6 +146,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="给这次跑起个名字，进存档文件名与 JSON。对比实验必填，例如 base / lora",
     )
     parser.add_argument(
+        "--guest-snapshot",
+        default="",
+        help="本轮从哪个客机快照起跑，原样记进存档。"
+        "**VMware 的快照名从客机内部读不到，只能由操作者传入。** "
+        "不传会打一条醒目警告——本项目已经因为没记快照名，"
+        "两次拿到无法验证环境一致性的对比数据（17%% 那轮、12%%→40%% 那对）",
+    )
+    parser.add_argument(
         "--reflector",
         action="store_true",
         help="模型报 done 时先做级联判定，上一步没让屏幕变就否决并要求重试。"
@@ -201,6 +209,14 @@ def main() -> int:
     from llm.factory import build_backend, describe, is_offline
 
     args = build_parser().parse_args()
+    if args.execute and not args.guest_snapshot:
+        # **本项目已经因为没记快照名吃过两次亏**（17% 那轮、12%→40% 那对），
+        # 所以漏传要显眼，但不阻断 —— 数据本身仍然有价值。
+        print(
+            "\n  [!] 未传 --guest-snapshot。存档里不会有快照名，"
+            "这批数据将无法与其他轮次验证环境一致性。"
+            "\n      见 docs/m4-错误分类体系.md 7.5。\n"
+        )
 
     import yaml
 
@@ -458,6 +474,9 @@ def archive_payload(
             # (把宿主机的 2560x1600 当成了客机的),而 §9 已证明分辨率值
             # 2 倍坐标误差——一个能左右结论的变量,存档里却查不到。
             "screen": _screen_info(),
+            # **快照名决定这批数据能和谁比。** 读不到就只能靠人传，
+            # 漏传时下面会打警告，但不阻断——数据本身仍然有价值。
+            "guest_snapshot": args.guest_snapshot or None,
             # 跑完了没有。中断的存档不能当完整数据用。
             "partial": partial,
             "records": [asdict(r) for r in records],
