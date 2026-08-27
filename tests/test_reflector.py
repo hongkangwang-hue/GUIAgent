@@ -148,3 +148,33 @@ class TestLoopConfig接线:
     @pytest.mark.parametrize("field", ["reflector", "reflector_max_rejects"])
     def test_配置项存在(self, field):
         assert hasattr(LoopConfig(), field)
+
+
+class TestArgparse帮助字符串:
+    """argparse 会对 help 做 ``help % params``，裸 ``%`` 会让 ``--help`` 直接崩。
+
+    这不是假设：``--executor-template`` 的 help 里写了「离线组 64% 的动作」，
+    从 2026-08-25 起 ``--help`` 就一直是坏的，直到 2026-08-27 才被发现
+    —— **因为没有人跑过 ``--help``**。百分号在本项目的文档习惯里到处都是，
+    所以这个坑会反复出现，用测试钉住。
+    """
+
+    def test_全部help可被格式化(self):
+        from scripts.run_basic_tasks import build_parser
+
+        broken = []
+        for action in build_parser()._actions:
+            text = action.help or ""
+            try:
+                text % {"default": None, "prog": "x"}
+            except (ValueError, TypeError, KeyError) as exc:
+                broken.append((action.option_strings, str(exc)))
+        assert not broken, f"help 里有裸 %，--help 会崩：{broken}"
+
+    def test_help能完整渲染(self):
+        """上一条只查单条；这条查整体渲染，能抓到 usage 行里的问题。"""
+        from scripts.run_basic_tasks import build_parser
+
+        text = build_parser().format_help()
+        assert "--reflector" in text
+        assert "--escalate-on-no-change" in text

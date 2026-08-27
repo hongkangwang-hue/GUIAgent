@@ -180,8 +180,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--executor-template",
         default="",
         help="执行器提示词模板，留空用 SessionConfig 的默认值。**微调模型建议用 executor_v0（零样本）**："
-        "2026-08-25 查出离线组 64% 的动作是在逐字背诵 executor_v1 few-shot "
-        "示例里的坐标 (470, 750)，而微调模型格式合规已达 97.9%，不需要示例",
+        "2026-08-25 查出离线组 64%% 的动作是在逐字背诵 executor_v1 few-shot "
+        "示例里的坐标 (470, 750)，而微调模型格式合规已达 97.9%%，不需要示例",
     )
     # 在线/离线由这组参数切换：
     #   在线      --provider dashscope
