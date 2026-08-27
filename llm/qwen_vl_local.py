@@ -47,9 +47,11 @@ M3 之前，「本地」这件事只做到了一半：
 
 ## adapter 与提示词的分布外问题（重要，不要静默掉）
 
-训练时的系统提示词（`finetune.train_lora.SYSTEM_PROMPT`）只给了四个动作：
-`left_click / double_click / right_click / mouse_move`，**没有 `type`、
-没有 `wait`、也没有 `done`**——因为 ScreenAgent 的三元组里就只有这些。
+**这一段描述的是 2026-08-26 之前的状态，保留作为记录。**
+当时训练提示词只给四个鼠标动作，没有 `type` / `wait` / `done`——不是因为
+ScreenAgent 没有，而是**装载层把它们丢了**（只保留带坐标的样本）。
+放宽之后 `SYSTEM_PROMPT` 已列全 8 种动作与 `done`，下面这段分布外分析
+对新 adapter 不再成立。
 
 而 Agent 跑真实任务时，`agent.session` 注入的是 `executor_v1`，动作空间
 大得多，还要求模型会报 `done`。挂着 adapter 去接 `executor_v1` 属于分布外。

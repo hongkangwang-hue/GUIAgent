@@ -1,0 +1,642 @@
+# M5 桌面任务测试集 —— 大纲第 7 周任务 1「包含 20 个不同难度桌面任务」
+#
+# ## 与 basic_tasks.yaml 的关系
+#
+# 前 5 个任务是 `basic_tasks.yaml` 的**逐字副本**。它们是 M2/M3 全部实测
+# 的对象，报告 §7 的端到端 17%、§10.5 的拆解粒度分析都建立在它们之上。
+# **改一个字，那些结论就不再可比。**
+#
+# `tests/test_desktop_20.py` 钉住这一点：逐字段比对两个文件的前 5 个任务。
+#
+# 后 15 个是本周新增。
+#
+# ## 设计判据时守的三条
+#
+# **1. 优先查副作用，其次查窗口，最后才查进程。**
+#
+#    file_contains  最可靠——查的是任务真正产生的东西，不受窗口 Z 序、
+#                   焦点、渲染时机影响
+#    window_title   次之——标题可能因版本、首启动引导页而变
+#    process        最弱——「进程在」不等于「任务做成了」
+#
+#    所以 15 个新任务里有 9 个用 file_contains 或 file_exists 作主判据。
+#
+# **2. precondition 必须是判据的反方向。**
+#
+#    判据说「文件应含 X」，起点就必须是「文件不含 X」；判据说「进程应退出」，
+#    起点就必须是「进程在运行」。不查反方向，reset 失败时 Agent 什么都不做
+#    也会打勾——**M2 的假成功全部来自这个方向**。
+#
+# **3. 判据不能依赖读不到的东西。**
+#
+#    Windows 11 计算器的窗口标题恒为「计算器」，**不含运算结果**。
+#    所以「算出 579」没法直接验证，只能让 Agent 把结果带到一个可读的地方
+#    （复制进记事本并保存）——那反而构成一个更有价值的跨应用任务。
+#
+# ## 难度分档
+#
+#    单步     1-2 个动作     验证感知与控制链路本身，期望接近 100%
+#    多步     3-6 个动作     大纲第 4 周的主要形态
+#    复杂     7 个以上       跨应用、需要中间状态，用来拉开区分度
+#
+# 分档不是为了好看：报告要按难度分别给成功率。只报总体的话，
+# 五个单步任务能把一批复杂任务的失败盖过去。
+#
+# ## 动作覆盖
+#
+# 本轮微调把训练集的动作空间从 3 种扩到 8 种（左键 / 双击 / 移动 /
+# 输入 / 按键 / 滚动 / 等待 / 完成）。任务集要能把新增的那几种用上，
+# 否则「补了 type 和 done 有没有用」这个问题测不出来：
+#
+#    type      write_note / append_line / calc_to_notepad / save_as ...
+#    key       copy_paste（Ctrl+C/V）、select_all（Ctrl+A）、save_as（Ctrl+S）
+#    scroll    scroll_document
+#    done      每个任务都需要——不会发 done 就会跑到步数上限
+#
+# ## 未验证事项
+#
+# 以下依赖客机的实际配置，**首次跑之前需在客机上确认**，
+# 不成立的任务要替换而不是硬调判据：
+#
+#   - 文件资源管理器的窗口标题实际是什么（`open_explorer` 的正则要能匹配到）
+#   - 最小化后的窗口是否真的从 `check_window_title` 的枚举里消失
+#     （`minimize_all` 的判据完全依赖这一点）
+#   - 记事本「另存为」对话框的行为（`write_note` 等要在里面输入路径）
+#
+# `tasks/setup_env.py --check` 会检查程序是否存在；窗口标题类的
+# 需要人工跑一次 `scripts/capture_gallery.py` 看一眼。
+#
+# ## 只用客机已有的软件
+#
+# `docs/虚拟机客机搭建说明.md` 把客机的软件清单写死为：
+#
+#     记事本（系统自带）、Edge（自带）、文件资源管理器（自带）
+#     「够了。不要装办公套件之类的大件，快照会变大。」
+#
+# 并且「**M1 → M5 全程不再变化**」——M2–M5 每轮评测都从快照恢复，
+# 装任何东西都会让快照与文档不符，而快照是所有轮次可比的前提。
+#
+# 所以 20 个任务只用：记事本、Edge、计算器、文件资源管理器。
+# **初稿里有一个「打开画图」，因为它不在这份清单里而被换掉了**——
+# 换任务，不是装软件。
+
+version: 1
+description: M5 桌面任务测试集，20 个任务（5 个沿用 M2 + 15 个新增）
+
+env:
+  test_dir: C:/agent-test
+  message_log: C:/agent-test/messages.log
+  test_file: C:/agent-test/测试文档.txt
+  # 新增任务用到的固定路径。由 setup_env.py 预置或清理。
+  note_file: C:/agent-test/笔记.txt
+  source_file: C:/agent-test/源文件.txt
+  target_file: C:/agent-test/目标文件.txt
+  rename_src: C:/agent-test/待改名.txt
+  rename_dst: C:/agent-test/已改名.txt
+  temp_file: C:/agent-test/待删除.txt
+  new_folder: C:/agent-test/新建文件夹
+  long_doc: C:/agent-test/长文档.txt
+
+tasks:
+  # =================================================================== #
+  # 第 1-5 个：basic_tasks.yaml 的逐字副本。**不要修改。**
+  # 见文件头「与 basic_tasks.yaml 的关系」。
+  # =================================================================== #
+
+  - name: open_browser
+    title: 打开浏览器
+    difficulty: 单步
+    instruction: 打开 Microsoft Edge 浏览器
+    max_steps: 6
+    success_check:
+      - type: process
+        name: msedge.exe
+        should_run: true
+    reset:
+      - python tasks/reset_desktop.py
+      - taskkill /F /IM notepad.exe /T
+      - taskkill /F /IM msedge.exe /T
+    precondition:
+      - type: process
+        name: msedge.exe
+        should_run: false
+    note: >
+      大纲点名的单步任务之一，M2 验收标准 2 期望接近 100%。
+      若这条都过不去，说明感知或控制链路有问题，而非模型能力问题。
+
+  - name: search_content
+    title: 搜索指定内容
+    difficulty: 多步
+    instruction: 打开 Microsoft Edge，在地址栏搜索「Python 官方文档」
+    max_steps: 12
+    success_check:
+      mode: all
+      checks:
+        - type: process
+          name: msedge.exe
+          should_run: true
+        - type: window_title
+          pattern: "Python.*Edge"
+          regex: true
+    reset:
+      - python tasks/reset_desktop.py
+      - taskkill /F /IM notepad.exe /T
+      - taskkill /F /IM msedge.exe /T
+    precondition:
+      - type: process
+        name: msedge.exe
+        should_run: false
+    note: >
+      需要网络。客机走 NAT 可以联网。搜索结果页内容会变，
+      但标题里含查询词这一点是稳定的。
+
+  - name: open_file
+    title: 打开指定文件
+    difficulty: 多步
+    instruction: 用记事本打开 C:\agent-test\测试文档.txt
+    max_steps: 12
+    success_check:
+      mode: all
+      checks:
+        - type: process
+          name: notepad.exe
+          should_run: true
+        - type: window_title
+          pattern: "测试文档"
+    reset:
+      - python tasks/reset_desktop.py
+      - taskkill /F /IM notepad.exe /T
+      - taskkill /F /IM msedge.exe /T
+    precondition:
+      - type: file_exists
+        path: C:/agent-test/测试文档.txt
+      - type: process
+        name: notepad.exe
+        should_run: false
+    note: >
+      文件由 setup_env.py 预置，内容固定。两条判据缺一不可，
+      理由见文件头。
+
+  - name: send_message
+    title: 发送消息
+    difficulty: 多步
+    instruction: 在「测试消息」程序里发送一条内容为「你好世界」的消息
+    max_steps: 12
+    success_check:
+      - type: file_contains
+        path: C:/agent-test/messages.log
+        text: 你好世界
+    reset:
+      - python tasks/reset_desktop.py
+      - taskkill /F /IM notepad.exe /T
+      - taskkill /F /IM msedge.exe /T
+      - python tasks/mock_messenger_reset.py
+    precondition:
+      - type: window_title
+        pattern: 测试消息
+      - type: file_contains
+        path: C:/agent-test/messages.log
+        text: 你好世界
+        should_contain: false
+    note: >
+      操作对象是 tasks/mock_messenger.py —— 本地模拟程序，消息只写本地
+      文件。不用真实聊天软件：那需要登录真实账号（违反 M0 数据边界），
+      且会向真人发出不可撤销的消息。
+
+  - name: close_app
+    title: 关闭应用
+    difficulty: 单步
+    instruction: 关闭计算器窗口
+    max_steps: 6
+    success_check:
+      - type: process
+        name: CalculatorApp.exe
+        should_run: false
+    reset:
+      - python tasks/reset_desktop.py
+      - taskkill /F /IM notepad.exe /T
+      - taskkill /F /IM msedge.exe /T
+      - taskkill /F /IM CalculatorApp.exe /T
+      - start calc
+      - python tasks/wait_for_process.py CalculatorApp.exe
+    precondition:
+      - type: process
+        name: CalculatorApp.exe
+        should_run: true
+    note: >
+      大纲点名的另一个单步任务。reset 负责把计算器打开，
+      否则「关闭它」这个任务没有起点。
+      注意 Windows 11 的计算器进程名是 CalculatorApp.exe，不是 calc.exe。
+
+  # =================================================================== #
+  # 第 6-10 个：新增单步任务
+  #
+  # 单步任务测的是**感知与控制链路本身**，不是模型的规划能力。
+  # 它们全部失败 → 链路有问题；它们全过而多步全挂 → 是规划或
+  # 长程执行的问题。**没有这一档，两种失败分不开。**
+  # =================================================================== #
+
+  - name: open_notepad
+    title: 打开记事本
+    difficulty: 单步
+    instruction: 打开记事本
+    max_steps: 6
+    success_check:
+      - type: process
+        name: notepad.exe
+        should_run: true
+    reset:
+      - python tasks/reset_desktop.py
+      - taskkill /F /IM notepad.exe /T
+      - taskkill /F /IM msedge.exe /T
+    precondition:
+      - type: process
+        name: notepad.exe
+        should_run: false
+    note: >
+      与 open_browser 构成对照：同样是「打开一个应用」，但记事本的图标
+      位置、启动方式与 Edge 不同。两条都过才说明「打开应用」这个能力
+      是通用的，而不是记住了某一个图标的位置。
+
+  - name: open_calculator
+    title: 打开计算器
+    difficulty: 单步
+    instruction: 打开计算器
+    max_steps: 6
+    success_check:
+      - type: process
+        name: CalculatorApp.exe
+        should_run: true
+    reset:
+      - python tasks/reset_desktop.py
+      - taskkill /F /IM CalculatorApp.exe /T
+      - taskkill /F /IM notepad.exe /T
+    precondition:
+      - type: process
+        name: CalculatorApp.exe
+        should_run: false
+    note: >
+      与 `close_app` 正好相反，构成一对。**诊断价值在于配对**：
+      若打开失败而关闭成功，说明模型认得计算器窗口但找不到启动入口；
+      两条都失败则是感知层面的问题。
+
+      计算器不在任务栏默认固定项里，要经开始菜单——比 Edge / 记事本
+      多一层，是「打开应用」这一档里最难的。
+
+  - name: open_explorer
+    title: 打开文件资源管理器
+    difficulty: 单步
+    instruction: 打开文件资源管理器
+    max_steps: 6
+    success_check:
+      - type: window_title
+        pattern: "资源管理器|此电脑|文件资源管理器|Explorer"
+        regex: true
+    reset:
+      - python tasks/reset_desktop.py
+      - taskkill /F /IM notepad.exe /T
+    precondition:
+      - type: window_title
+        pattern: "资源管理器|此电脑|文件资源管理器|Explorer"
+        regex: true
+        should_match: false
+    note: >
+      **判据必须用窗口标题，不能用进程**：`explorer.exe` 是 Windows 的
+      桌面外壳，永远在运行，进程判据恒为真。这是「进程在 ≠ 任务做成了」
+      最典型的一例。
+
+      标题在不同 Windows 11 版本上有几种写法（「此电脑」「文件资源管理器」
+      或当前文件夹名），所以用正则列出几种可能。**首次跑之前在客机上
+      看一眼实际标题**，对不上就补进这个正则，不要改成进程判据。
+
+      这条的诊断价值最高：`create_folder` / `rename_file` / `delete_file`
+      三个多步任务都依赖文件资源管理器。它若打不开，那三条的失败就有了
+      现成的解释，不必再猜。
+
+  - name: close_notepad
+    title: 关闭记事本
+    difficulty: 单步
+    instruction: 关闭记事本窗口
+    max_steps: 6
+    success_check:
+      - type: process
+        name: notepad.exe
+        should_run: false
+    reset:
+      - python tasks/reset_desktop.py
+      - taskkill /F /IM notepad.exe /T
+      - taskkill /F /IM msedge.exe /T
+      - start notepad
+      - python tasks/wait_for_process.py notepad.exe
+    precondition:
+      - type: process
+        name: notepad.exe
+        should_run: true
+    note: >
+      与 close_app（计算器）构成对照。**记事本会弹「是否保存」确认框**
+      —— 若 Agent 在打开的记事本里输入过内容。这里 reset 开的是空白记事本，
+      正常关闭不该弹框；真弹了就是 Agent 多做了动作，那也是有效信息。
+
+  - name: minimize_all
+    title: 显示桌面
+    difficulty: 单步
+    instruction: 最小化所有窗口，显示桌面
+    max_steps: 6
+    success_check:
+      - type: window_title
+        pattern: "计算器"
+        should_match: false
+    reset:
+      - python tasks/reset_desktop.py
+      - taskkill /F /IM CalculatorApp.exe /T
+      - start calc
+      - python tasks/wait_for_process.py CalculatorApp.exe
+    precondition:
+      - type: window_title
+        pattern: "计算器"
+    note: >
+      **这条测的是组合键**（Win+D）或任务栏右下角的「显示桌面」条。
+      判据是「计算器窗口不再可见」而非「进程退出」——最小化不杀进程，
+      所以只能用窗口标题判定。
+      注意：`check_window_title` 枚举的是**可见**窗口，最小化后不在列表里。
+      这一点需在客机上确认一次，不成立则此任务须替换。
+
+  # =================================================================== #
+  # 第 11-17 个：新增多步任务
+  #
+  # 这一档大量使用 file_contains 作判据——它查的是任务真正写进磁盘的
+  # 东西，是全部四种判据里最难伪造的。
+  # =================================================================== #
+
+  - name: write_note
+    title: 写入并保存笔记
+    difficulty: 多步
+    instruction: 打开记事本，输入「今天完成了三项任务」，保存到 C:\agent-test\笔记.txt
+    max_steps: 16
+    success_check:
+      - type: file_contains
+        path: C:/agent-test/笔记.txt
+        text: 今天完成了三项任务
+    reset:
+      - python tasks/reset_desktop.py
+      - taskkill /F /IM notepad.exe /T
+      - python tasks/setup_env.py --clean 笔记.txt
+    precondition:
+      - type: file_exists
+        path: C:/agent-test/笔记.txt
+        should_exist: false
+    note: >
+      **本轮微调新增 type 动作后，这一档才有可能做成。** 训练集里 type
+      从 0 条变成 216 条，而这个任务的核心就是输入文本。
+      涉及「另存为」对话框——要输入路径并确认，是多步任务里较难的一类。
+
+  - name: append_line
+    title: 在已有文件末尾追加
+    difficulty: 多步
+    instruction: 用记事本打开 C:\agent-test\测试文档.txt，在末尾加一行「已审阅」，然后保存
+    max_steps: 16
+    success_check:
+      mode: all
+      checks:
+        - type: file_contains
+          path: C:/agent-test/测试文档.txt
+          text: 已审阅
+        # 原有内容必须还在。只查「已审阅」的话，Agent 把整个文件清空
+        # 再写一行也算成功。
+        - type: file_contains
+          path: C:/agent-test/测试文档.txt
+          text: Hello World
+    reset:
+      - python tasks/reset_desktop.py
+      - taskkill /F /IM notepad.exe /T
+      - python tasks/setup_env.py
+    precondition:
+      - type: file_contains
+        path: C:/agent-test/测试文档.txt
+        text: 已审阅
+        should_contain: false
+    note: >
+      两条判据的组合堵的是「清空重写」这种伪成功。
+      需要 Ctrl+End 或滚动到文件末尾——**scroll 动作在本轮训练集里有
+      41 条**，这个任务能测到它。
+
+  - name: copy_paste_text
+    title: 跨文件复制文本
+    difficulty: 多步
+    instruction: 打开 C:\agent-test\源文件.txt，把里面的内容复制到 C:\agent-test\目标文件.txt 并保存
+    max_steps: 20
+    success_check:
+      - type: file_contains
+        path: C:/agent-test/目标文件.txt
+        text: 需要被复制的内容
+    reset:
+      - python tasks/reset_desktop.py
+      - taskkill /F /IM notepad.exe /T
+      - python tasks/setup_env.py
+    precondition:
+      mode: all
+      checks:
+        - type: file_contains
+          path: C:/agent-test/源文件.txt
+          text: 需要被复制的内容
+        - type: file_contains
+          path: C:/agent-test/目标文件.txt
+          text: 需要被复制的内容
+          should_contain: false
+    note: >
+      **专门测组合键**：Ctrl+A 全选、Ctrl+C 复制、Ctrl+V 粘贴、Ctrl+S 保存。
+      本轮训练集里 key 动作有 254 条（enter 126 / ctrl+s 26 / ctrl+a 25 …），
+      而且键名刚做过 X11 keysym → pyautogui 的翻译——这条任务是那次翻译
+      是否正确的端到端验证。
+
+  - name: create_folder
+    title: 新建文件夹
+    difficulty: 多步
+    instruction: 在 C:\agent-test 目录下新建一个名为「新建文件夹」的文件夹
+    max_steps: 16
+    success_check:
+      - type: file_exists
+        path: C:/agent-test/新建文件夹
+    reset:
+      - python tasks/reset_desktop.py
+      - python tasks/setup_env.py --clean 新建文件夹
+    precondition:
+      - type: file_exists
+        path: C:/agent-test/新建文件夹
+        should_exist: false
+    note: >
+      考验文件资源管理器的右键菜单或 Ctrl+Shift+N。
+      **右键菜单是本项目动作空间里的弱项**——训练集里 right_click 为 0 条，
+      所以这条大概率会失败。**保留它正是为了标出这个边界**，
+      不要因为「做不到」就删掉。
+
+  - name: rename_file
+    title: 重命名文件
+    difficulty: 多步
+    instruction: 把 C:\agent-test\待改名.txt 重命名为 已改名.txt
+    max_steps: 16
+    success_check:
+      mode: all
+      checks:
+        - type: file_exists
+          path: C:/agent-test/已改名.txt
+        - type: file_exists
+          path: C:/agent-test/待改名.txt
+          should_exist: false
+    reset:
+      - python tasks/reset_desktop.py
+      - python tasks/setup_env.py
+    precondition:
+      - type: file_exists
+        path: C:/agent-test/待改名.txt
+    note: >
+      两条判据缺一不可：只查新文件存在的话，Agent 复制一份也算成功。
+      重命名要么按 F2、要么右键菜单、要么慢速双击——三条路都不在
+      训练集的高频动作里。
+
+  - name: delete_file
+    title: 删除文件
+    difficulty: 多步
+    instruction: 删除 C:\agent-test\待删除.txt
+    max_steps: 12
+    success_check:
+      - type: file_exists
+        path: C:/agent-test/待删除.txt
+        should_exist: false
+    reset:
+      - python tasks/reset_desktop.py
+      - python tasks/setup_env.py
+    precondition:
+      - type: file_exists
+        path: C:/agent-test/待删除.txt
+    note: >
+      **这是任务集里唯一的破坏性操作**，且目标限定在 C:/agent-test 内。
+      `control/safety.py` 的危险动作规则不会拦截图形界面里的删除，
+      所以边界靠任务本身限定——指令里写死了完整路径。
+      删到回收站即可满足判据（原路径不再存在）。
+
+  - name: scroll_document
+    title: 滚动到文档末尾
+    difficulty: 多步
+    instruction: 用记事本打开 C:\agent-test\长文档.txt，滚动到文件最末尾，在最后加一行「末尾已到达」，保存
+    max_steps: 20
+    success_check:
+      mode: all
+      checks:
+        - type: file_contains
+          path: C:/agent-test/长文档.txt
+          text: 末尾已到达
+        # 最后一行的标记必须还在——证明确实到了末尾而不是插在中间
+        - type: file_contains
+          path: C:/agent-test/长文档.txt
+          text: 这是最后一行
+    reset:
+      - python tasks/reset_desktop.py
+      - taskkill /F /IM notepad.exe /T
+      - python tasks/setup_env.py
+    precondition:
+      - type: file_contains
+        path: C:/agent-test/长文档.txt
+        text: 末尾已到达
+        should_contain: false
+    note: >
+      长文档由 setup_env.py 生成（约 200 行），一屏放不下，必须滚动。
+      **训练集里 scroll 只有 41 条**，是八种动作里最少的一种，
+      这条任务专门测它。
+
+  # =================================================================== #
+  # 第 18-20 个：新增复杂任务
+  #
+  # 跨应用、需要保持中间状态。这一档用来拉开区分度——如果所有模型在
+  # 这里都是 0%，说明任务集的上限设得太高，需要在报告里说明。
+  # =================================================================== #
+
+  - name: calc_to_notepad
+    title: 计算并记录结果
+    difficulty: 复杂
+    instruction: 用计算器算出 123 加 456 的结果，把结果数字写进记事本并保存到 C:\agent-test\笔记.txt
+    max_steps: 30
+    success_check:
+      - type: file_contains
+        path: C:/agent-test/笔记.txt
+        text: "579"
+    reset:
+      - python tasks/reset_desktop.py
+      - taskkill /F /IM notepad.exe /T
+      - taskkill /F /IM CalculatorApp.exe /T
+      - python tasks/setup_env.py --clean 笔记.txt
+    precondition:
+      - type: file_exists
+        path: C:/agent-test/笔记.txt
+        should_exist: false
+    note: >
+      **这条任务的判据设计值得说明。** 直接查「计算器显示 579」是做不到的：
+      Windows 11 计算器的窗口标题恒为「计算器」，不含运算结果，
+      而截图 OCR 属于人工目测的变种，不符合「程序化判定」的要求。
+
+      让 Agent 把结果带到一个可读的地方（记事本 + 保存），既绕开了这个
+      限制，又构成了一个真正的跨应用任务——两个应用、一次剪贴板或一次
+      记忆传递。**限制反而催生了更好的任务设计。**
+
+  - name: read_and_summarize
+    title: 读取并转写
+    difficulty: 复杂
+    instruction: 打开 C:\agent-test\测试文档.txt 看清楚里面的「测试行 3」是什么内容，然后新建一个记事本，把那一行的内容写进去，保存到 C:\agent-test\目标文件.txt
+    max_steps: 30
+    success_check:
+      - type: file_contains
+        path: C:/agent-test/目标文件.txt
+        text: "1234567890"
+    reset:
+      - python tasks/reset_desktop.py
+      - taskkill /F /IM notepad.exe /T
+      - python tasks/setup_env.py
+    precondition:
+      mode: all
+      checks:
+        - type: file_exists
+          path: C:/agent-test/测试文档.txt
+        - type: file_contains
+          path: C:/agent-test/目标文件.txt
+          text: "1234567890"
+          should_contain: false
+    note: >
+      **这条测的是「看懂屏幕」而不只是「点对位置」。** Agent 必须真的
+      从截图里读出 `1234567890` 这串数字，再把它输出出来——
+      复制粘贴也能做到，但那需要先精确选中那一行。
+
+      两条路都比纯点击难。这是任务集里对多模态理解要求最高的一条。
+
+  - name: multi_app_workflow
+    title: 跨三个应用的工作流
+    difficulty: 复杂
+    instruction: 打开计算器算出 100 减 37 的结果，打开记事本把结果写下来保存到 C:\agent-test\笔记.txt，最后关闭计算器
+    max_steps: 40
+    success_check:
+      mode: all
+      checks:
+        - type: file_contains
+          path: C:/agent-test/笔记.txt
+          text: "63"
+        - type: process
+          name: CalculatorApp.exe
+          should_run: false
+    reset:
+      - python tasks/reset_desktop.py
+      - taskkill /F /IM notepad.exe /T
+      - taskkill /F /IM CalculatorApp.exe /T
+      - python tasks/setup_env.py --clean 笔记.txt
+    precondition:
+      - type: file_exists
+        path: C:/agent-test/笔记.txt
+        should_exist: false
+    note: >
+      **任务集里最难的一条**：三个阶段、跨两个应用、且最后一步是清理。
+
+      它专门测 `done` 的时机——报告 §10.9 记录过，模型不会发 done 时
+      每个子任务都跑到步数上限，中途撞上过登录框和密码导入对话框。
+      本轮训练集新增了 897 条 done 样本，这条任务是那批数据是否奏效的
+      最强检验：**做完三步还要知道自己做完了。**
+
+      预期成功率低。低本身是结果，不是任务设计的失败——但如果 20 个任务
+      里复杂档全军覆没，报告里要写明这一档的上限设在了模型能力之外。

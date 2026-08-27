@@ -164,7 +164,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--allowed-actions",
         default="",
         help="逗号分隔，限定执行器与规划器只用这些动作。"
-        "**微调版 3B 应填 left_click,double_click,right_click,mouse_move**："
+        "**2026-08-26 起微调版 3B 不要再收窄**——训练集已含 8 种动作 + done："
         "它的训练集里 type / key 各 0 条,而提示词照样说「你可以 type」,"
         "结果五个任务里四个连掷骰子的机会都没有。留空表示不限制",
     )

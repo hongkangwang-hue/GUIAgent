@@ -214,6 +214,79 @@ class TestLimitSampling:
         ]
         assert len(spread_by_session(rows)) == 5
 
+
+class TestLimitKeepsActionMix:
+    """`--limit` 抽出来的动作分布必须与全集一致。
+
+    ## 这是同一个坑的第二次
+
+    2026-08-25 修好了「切前缀只覆盖 6 个 session」。但那个实现是
+    `buckets[key].pop(0)`——第一轮取每个 session 的**第 0 条**，
+    而验证集有 43 个 session，`--limit 20` 就只取得到第 0 条。
+
+    **动作类型和位置强相关**：`done` 是一段动作序列的最后一个，
+    永远不在第 0 位。2026-08-26 实测 `--limit 20` 抽出的 20 条里
+    `done` 是 **0 条**，而全集里它占 **41.6%**——随机抽中 0 条的概率
+    约十万分之三。探路样本完全没测到占四成的那类动作。
+
+    教训：**「按 X 铺开」只保证 X 这一维无偏。** 换一个与位置相关的维度，
+    偏差就原样回来了。
+    """
+
+    #: 造一个与真实验证集同形态的集合：done 占四成且**总在每段末尾**。
+    ROWS = [
+        {"sample_id": f"{s}-{i}", "session_id": s, "action": a}
+        for s in "abcdefghij"
+        for i, a in enumerate(["left_click", "type", "done", "done"])
+    ]
+
+    def test_前_N_条里_done_的占比接近全集(self):
+        import collections
+
+        from eval.action import spread_by_session
+
+        full = collections.Counter(r["action"] for r in self.ROWS)
+        picked = spread_by_session(self.ROWS)[:20]
+        got = collections.Counter(r["action"] for r in picked)
+        for name, n in full.items():
+            want = n / len(self.ROWS) * 20
+            assert abs(got.get(name, 0) - want) <= 1, (
+                f"{name}: 抽到 {got.get(name, 0)}，期望 {want}"
+            )
+
+    def test_切前缀与旧实现都漏掉_done(self):
+        """把缺陷钉住：**这两条描述的是修之前的行为。**"""
+        assert all(r["action"] != "done" for r in self.ROWS[:2])
+
+        # 旧实现等价于「每个 session 取第 0 条」
+        first_of_each = [r for r in self.ROWS if r["sample_id"].endswith("-0")]
+        assert all(r["action"] != "done" for r in first_of_each[:20])
+
+    def test_小类不被过采样(self):
+        """**过采样也是偏差，只是方向反了。**
+
+        中途试过「每轮各层至少取 1 条」，结果占 2.7% 的 `wait` 在前 20 条里
+        拿到 2 条，过采样 4 倍。这个函数存在的全部理由就是不让探路样本
+        给出偏差的数——哪个方向的偏差都不行。
+        """
+        import collections
+
+        from eval.action import spread_by_session
+
+        rows = [
+            {"sample_id": f"{i}", "session_id": f"s{i % 5}", "action": "left_click"}
+            for i in range(97)
+        ] + [{"sample_id": "rare", "session_id": "s0", "action": "scroll"}]
+        got = collections.Counter(r["action"] for r in spread_by_session(rows)[:20])
+        assert got.get("scroll", 0) <= 1, "占 1% 的动作不该在前 20 条里出现多次"
+
+    def test_没有_action_字段时退化为纯_session_轮流(self):
+        """向后兼容：旧的调用方（与旧测试）不带 action 字段。"""
+        from eval.action import spread_by_session
+
+        rows = [{"sample_id": f"{s}-{i}", "session_id": s} for s in "abcde" for i in range(3)]
+        assert len({r["session_id"] for r in spread_by_session(rows)[:5]}) == 5
+
     def test_没有_session_id_字段时退化为原序(self):
         from eval.action import spread_by_session
 

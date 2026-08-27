@@ -150,14 +150,44 @@ def load_jsonl(path: Path) -> list[dict]:
 #: 动作生成是噪声），只保留决定输出格式的那部分：动作名与 JSON 结构。
 #:
 #: 坐标空间与 `finetune.dataset.COORD_SPACE` 一致，不在提示词里另写一套。
-SYSTEM_PROMPT = """你是一个桌面 GUI 智能体。你会看到一张屏幕截图和一个任务目标，
-需要判断为完成该任务，下一步应当执行什么动作。
+#: 训练与评测共用的系统提示词。
+#:
+#: ## 2026-08-26：动作集从 4 个扩到 8 个 + done
+#:
+#: 此前这里只列 `left_click / double_click / right_click / mouse_move`
+#: 并要求「必须输出 x/y」。那在当时是**对的**——旧训练集只有 3 种动作，
+#: 全部带坐标，提示词与数据完全一致。
+#:
+#: 数据放宽到 8 种动作之后它就不对了，而且**不会报错**：
+#:
+#:     提示词说   只有 4 个鼠标动作，必须给 x/y
+#:     训练目标却是 {"done": true}            占 41.6%
+#:                {"action":"type",...}       占 12.3%
+#:                {"action":"key",...}        占 15.5%
+#:
+#: 于是 88 分钟的训练是在**提示词与七成目标直接矛盾**的条件下做的。
+#: 实测后果：`done` 8 条全错、误报率 0.0%（提示词从没说过它存在），
+#: `type` 类型准确率仅 33%。
+#:
+#: > 教训：**动作空间是提示词与数据之间的契约。** 只改一边，另一边不会
+#: > 报错，只会安静地对抗——而 loss 曲线看起来完全正常。
+SYSTEM_PROMPT = """你是一个桌面 GUI 智能体。你会看到一张屏幕截图和一个子任务，
+需要判断为完成该子任务，下一步应当执行什么动作。
 
-可用动作：left_click / double_click / right_click / mouse_move
+可用动作与输出格式（只输出一个 JSON 对象，不要任何解释文字）：
 
-只输出一个 JSON 对象，不要任何解释文字：
+{"action": "left_click", "x": 横坐标, "y": 纵坐标}
+{"action": "double_click", "x": 横坐标, "y": 纵坐标}
+{"action": "right_click", "x": 横坐标, "y": 纵坐标}
+{"action": "mouse_move", "x": 横坐标, "y": 纵坐标}
+{"action": "type", "text": "要输入的文本"}
+{"action": "key", "keys": "enter"}          组合键写成 ctrl+a 这种形式
+{"action": "scroll", "direction": "down", "amount": 3}
+{"action": "wait", "duration": 1.0}
 
-{"action": "动作名", "x": 横坐标, "y": 纵坐标}
+若该子任务已经完成，输出：
+
+{"done": true}
 
 坐标按 1000×1000 的范围给出，原点在左上角。"""
 
@@ -181,6 +211,21 @@ def build_messages(record: dict) -> list[dict]:
         },
         {"role": "assistant", "content": [{"type": "text", "text": record["answer"]}]},
     ]
+
+
+def _last_subsequence_end(haystack: list[int], needle: list[int]) -> int | None:
+    """`needle` 在 `haystack` 里最后一次出现的**结束位置**（不含）。找不到返回 None。
+
+    用来定位 `<|im_start|>assistant\\n` —— 它之后就是要训练的答案。
+    **取最后一次**：多轮对话里 assistant 可能出现多次，要的是最后那一轮。
+    """
+    n, m = len(haystack), len(needle)
+    if m == 0 or m > n:
+        return None
+    for i in range(n - m, -1, -1):
+        if haystack[i : i + m] == needle:
+            return i + m
+    return None
 
 
 def resolve_resume(value: str) -> Path | None:
@@ -304,14 +349,38 @@ def train(args) -> TrainStats:  # noqa: PLR0915 —— 训练脚本，线性叙�
         )
         labels = inputs["input_ids"].clone()
         labels[labels == processor.tokenizer.pad_token_id] = -100
-        for index, record in enumerate(batch):
-            answer_ids = processor.tokenizer(record["answer"], add_special_tokens=False)[
-                "input_ids"
-            ]
-            # 回答在序列末尾，把它之前的全部 mask 掉
-            keep = len(answer_ids)
-            if keep < labels.shape[1]:
-                labels[index, : labels.shape[1] - keep] = -100
+
+        # **按 assistant 回合的起始位置掩码，不能按答案长度从末尾倒推。**
+        #
+        # 2026-08-26 实测出的 bug：原来的写法是「留最后 len(answer_ids) 个
+        # token」，而 chat template 会在答案后面追加 `<|im_end|>\n`，
+        # 于是窗口整体后移 3 个 token——
+        #
+        #     期望训练  {"action": "left_click", "x": 475, "y": 251}
+        #     实际训练  ": "left_click", "x": 475, "y": 251}<|im_end|>\n
+        #               ↑ 开头的 {"action 被当成上下文遮掉了
+        #
+        # 旧数据没暴露它：答案都是 23 个 token 上下，丢掉开头 3 个还剩
+        # 动作名和坐标，大体能学会。**答案越短损失比例越大**——
+        # `{"done": true}` 只有 5 个 token，丢 3 个就是六成信号没了，
+        # 模型从来没被训练过要输出 `{"done"` 这个开头。
+        #
+        # 这解释了放宽后 `done` 8 条全错、误报率 0.0%。
+        #
+        # 现在的做法：找到最后一个 `<|im_start|>assistant\n`，把它及之前
+        # 全部遮掉。这样标签正好覆盖「答案 + 结束符」——结束符要训练，
+        # 否则模型不知道何时停。
+        head = processor.tokenizer("<|im_start|>assistant\n", add_special_tokens=False)["input_ids"]
+        for index in range(labels.shape[0]):
+            ids = inputs["input_ids"][index].tolist()
+            start = _last_subsequence_end(ids, head)
+            if start is None:
+                # 找不到就退回全遮，**宁可这条样本不产生梯度，也不要用
+                # 一个偏移的窗口去训练**——后者不会报错，只会学错东西。
+                labels[index, :] = -100
+                logger.warning("样本 %d 找不到 assistant 起始标记，已整条屏蔽", index)
+            else:
+                labels[index, :start] = -100
         inputs["labels"] = labels
         return inputs
 
@@ -336,7 +405,13 @@ def train(args) -> TrainStats:  # noqa: PLR0915 —— 训练脚本，线性叙�
     # `--save-every` 可覆盖：一边用电脑一边训练时，OOM 风险高，
     # 值得用更密的存点换更小的损失。
     save_every = args.save_every or max(5, total_steps // 4)
-    print(f"  总步数 {total_steps}    预热 {warmup_steps} 步    每 {save_every} 步存一次")
+    # **冒烟模式显式给了 --save-every 就必须真的存。**
+    # 原来冒烟恒定 save_steps=10**9，永不存点；而崩溃只发生在存点那一刻，
+    # 于是冒烟测试对这类故障完全无效 —— 两次死机都是长跑到一半才暴露。
+    do_save = bool(args.save_every) or not args.smoke
+    save_steps = save_every if do_save else 10**9
+    how = f"每 {save_every} 步存一次" if do_save else "不存权重"
+    print(f"  总步数 {total_steps}    预热 {warmup_steps} 步    {how}")
 
     training_args = TrainingArguments(
         output_dir=str(run_dir),
@@ -345,8 +420,12 @@ def train(args) -> TrainStats:  # noqa: PLR0915 —— 训练脚本，线性叙�
         num_train_epochs=args.epochs,
         max_steps=args.max_steps if args.smoke else -1,
         learning_rate=args.lr,
-        # paged_adamw_8bit：优化器状态分页到内存，显存吃紧时不 OOM
-        optim="paged_adamw_8bit",
+        # **不用 paged_adamw_8bit。** 它把优化器状态分页到 CUDA 统一内存
+        # (UVM)，而 Windows WDDM 不支持 UVM 超额分配。存检查点时要把分页
+        # 出去的状态拉回显存，这一步会让显示驱动超过 TDR 看门狗的 2 秒，
+        # 触发 nvlddmkm Event 14 整机死机（本机实测两次，都死在存点那刻）。
+        # adamw_8bit 走普通显存，最坏是 OOM —— 那是个干净的报错，不是死机。
+        optim="adamw_8bit",
         lr_scheduler_type="cosine",
         # **用 warmup_steps 而不是 warmup_ratio。** transformers 5.x 移除了
         # 后者（实测 5.15.1 直接 TypeError），而 warmup_steps 在 4.x / 5.x
@@ -360,8 +439,11 @@ def train(args) -> TrainStats:  # noqa: PLR0915 —— 训练脚本，线性叙�
         # × 2 epoch），**一次都不会触发**。跑到第 130 步 OOM，三小时白费。
         # 而这台机器的峰值显存实测 6984MB / 8151MiB，中途开个浏览器就可能
         # 爆——checkpoint 不是可选项。
-        save_steps=10**9 if args.smoke else save_every,
+        save_steps=save_steps,
         save_total_limit=3,
+        # **只存模型，不存 optimizer.pt。** 写优化器状态是显存尖峰的来源，
+        # 也是上面那条死机链的触发点。代价：不能中途续训，断了要重跑。
+        save_only_model=True,
         gradient_checkpointing=True,
         bf16=stats.precision == "bf16",
         fp16=stats.precision == "fp16",

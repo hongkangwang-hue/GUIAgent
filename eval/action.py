@@ -70,7 +70,27 @@ VAL_FILE = Path("finetune/data/val.jsonl")
 DEFAULT_RADII = (25, 50, 100)
 
 #: 系统提示词里给出的动作空间。输出这之外的动作即为不合规。
-ALLOWED_ACTIONS = frozenset({"left_click", "double_click", "right_click", "mouse_move"})
+#: 输出里允许出现的动作。**2026-08-26 从 4 个扩到 8 个**——训练集放宽后
+#: 模型会输出 `type` / `key` / `wait` / `scroll`，而它们此前不在这个集合里，
+#: 于是每一条都被 `format_compliant` 判为不合规。
+#:
+#: 实测：`--limit 20` 那批格式合规率报 70%，正好等于 20 条里坐标类的 14 条
+#: ——**非坐标动作的输出被全部判成格式错误**，而它们其实完全合规。
+ALLOWED_ACTIONS = frozenset(
+    {
+        "left_click",
+        "double_click",
+        "right_click",
+        "mouse_move",
+        "type",
+        "key",
+        "wait",
+        "scroll",
+    }
+)
+
+#: 涉及坐标的动作。只有它们才要求输出里有整数 x/y。
+_NEEDS_XY = frozenset({"left_click", "double_click", "right_click", "mouse_move"})
 
 
 def format_compliant(raw: str) -> bool:
@@ -95,9 +115,19 @@ def format_compliant(raw: str) -> bool:
         return False
     if not isinstance(payload, dict):
         return False
-    if payload.get("action") not in ALLOWED_ACTIONS:
+    # `done` 是完成信号不是动作，输出里没有 `action` 字段。
+    # 它的合规形态就是 `{"done": true}`——不单独放行的话，
+    # 验证集里占 41.6% 的那一类会被全部判成格式错误。
+    action = payload.get("action")
+    if action is None:
+        return payload.get("done") is True
+    if action not in ALLOWED_ACTIONS:
         return False
-    return isinstance(payload.get("x"), int) and isinstance(payload.get("y"), int)
+    # **只有涉及坐标的动作才要求 x/y。** 无条件要求的话，
+    # `{"action": "type", "text": "你好"}` 这种完全合规的输出会被判错。
+    if action in _NEEDS_XY:
+        return isinstance(payload.get("x"), int) and isinstance(payload.get("y"), int)
+    return True
 
 
 def parroted(raw: str, few_shot: list) -> bool:
@@ -118,9 +148,19 @@ class Prediction:
     sample_id: str
     instruction: str
     truth_action: str = ""
+    #: 真值坐标。**只有涉及坐标的动作才有**——2026-08-26 训练集放宽后，
+    #: 验证集里 `type` / `key` / `done` / `wait` / `scroll` 都没有坐标。
+    #: 此前这里无条件读 `row["point_norm"]`，新数据一进来就 KeyError。
     truth_xy: list = field(default_factory=list)
     pred_action: str = ""
     pred_xy: list = field(default_factory=list)
+    #: 坐标之外的关键参数。`type` 看 text，`key` 看 keys，`scroll` 看 direction。
+    #: **不看这个的话，「知道要打字」和「打对了字」是一回事**——而后者才是
+    #: 本轮补 216 条 type 样本要解决的问题。
+    truth_params: dict = field(default_factory=dict)
+    pred_params: dict = field(default_factory=dict)
+    #: 关键参数是否一致。不涉及参数的动作恒为 True。
+    params_ok: bool = False
     action_ok: bool = False
     #: 输出是否合规：能解析成 JSON、动作在允许集合内、带 x/y 两个整数。
     #: **与 action_ok 分开记**，理由见 summarize 的说明。
@@ -136,6 +176,90 @@ class Prediction:
     #: ——`format_ok` 和 `action_ok` 一个都拦不住它。
     #: 提示词消融必须单独量这一项，否则 few-shot 看起来只有好处。
     parroted: bool = False
+
+
+#: 每个动作除坐标外，**哪个参数决定成败**。
+#:
+#: 2026-08-26 训练集从 3 种动作放宽到 8 种后加的。此前所有动作都涉及坐标，
+#: 「命中」只需比坐标；现在过半样本没有坐标，得另有判据。
+#:
+#: 选哪个参数是有取舍的：
+#:
+#:   type    看 text        打字打错了字，动作类型再对也没用
+#:   key     看 keys        按错键同理
+#:   scroll  看 direction   方向错了就是反向滚
+#:   wait    不看           秒数差一点不影响任务成败
+#:   done    不看           它没有参数，发出来就算对
+#:   点击类   不看           它们的成败由坐标距离判定
+#: 值是 (真值里的键名, 模型输出里的键名)。**两边不一样，这是坑。**
+#:
+#: `val.jsonl` 的 `params` 用装载器的词表（`key` 单数，来自 ScreenAgent 的
+#: `keyboard_key`）；模型输出经 `llm.parsing` 归一化后用的是执行器的词表
+#: （`keys` 复数，`PARAM_ALIASES` 把 `key` 映射过去）。
+#:
+#: 混用的后果实测过：5 条 `key` 样本类型准确率 100%、命中率 0%——
+#: 真值侧按 `keys` 去取，取到空，于是永远和预测对不上。
+KEY_PARAM = {
+    "type": ("text", "text"),
+    "key": ("key", "keys"),
+    "scroll": ("direction", "direction"),
+}
+
+#: 涉及坐标的动作。与 `data.schema.ACTION_REQUIREMENTS` 里标了 `"point"` 的一致。
+COORD_ACTIONS = frozenset({"left_click", "double_click", "right_click", "mouse_move"})
+
+
+def key_params(action: str, params: dict, *, predicted: bool = False) -> dict:
+    """取出该动作的关键参数，归一化后用于比对。
+
+    `predicted=True` 时按**模型输出**的词表取键，否则按**真值**的词表取
+    （两者不同，见 `KEY_PARAM`）。返回时统一用一个中性键名，
+    这样真值与预测才能直接相等比较。
+
+    **归一化是必需的**：模型可能输出 `"Enter"` 而真值是 `"enter"`，
+    或者文本首尾多个空格。不归一化的话这类差异会被记成错误，
+    而它们在执行时其实等价（`control.executor` 会 `.lower()` 再拆分）。
+    """
+    pair = KEY_PARAM.get(action)
+    if not pair:
+        return {}
+    name = pair[1] if predicted else pair[0]
+    value = params.get(name)
+    if value is None:
+        return {}
+    return {"value": str(value).strip().lower()}
+
+
+def parse_params(raw: str) -> dict:
+    """从模型输出里抠出参数。解析不出来返回空 dict。
+
+    走 `llm.parsing.parse_action_payload` —— **与推理时同一套解析**。
+    评测自己写一套的话，量到的就不是模型在真实回路里的表现。
+    """
+    try:
+        from llm.parsing import parse_action_payload
+
+        return parse_action_payload(raw).get("params") or {}
+    except Exception:  # noqa: BLE001 —— 解析失败等同于没有参数
+        return {}
+
+
+def is_hit(record, radius: float) -> bool:
+    """这条样本算不算命中。
+
+    **判据随动作类型变，因为「做对了」的含义本来就不同：**
+
+        点击类   动作类型对 **且** 坐标落在半径内
+        其他     动作类型对 **且** 关键参数一致
+
+    统一用坐标判据的话，`type` / `done` 这些没有坐标的样本会全部记成失败；
+    统一用类型判据的话，点击到屏幕另一头也算对。两种都不成立。
+    """
+    if not record.action_ok:
+        return False
+    if record.truth_action in COORD_ACTIONS:
+        return 0 <= record.distance <= radius
+    return record.params_ok
 
 
 def load_val(path: Path) -> list[dict]:
@@ -254,20 +378,56 @@ def spread_by_session(rows: list) -> list:
     随机能降低偏差但不保证覆盖；轮流取保证 N 条来自 min(N, session 数)
     个不同 session——**N=20 就是 20 个不同 session**，这是能拿到的最好
     覆盖。同时它是确定性的，同一份 val 跑两次选中的是同一批。
+
+    ## 2026-08-26：光按 session 铺开还不够
+
+    上面那个修复只解决了「不同 session」，没解决「session 内部的位置」。
+    实现是 `buckets[key].pop(0)`——第一轮取每个 session 的**第 0 条**，
+    而验证集有 43 个 session，`--limit 20` 就只会取到第 0 条。
+
+    **动作类型和位置强相关**：`done` 是一段动作序列的最后一个，永远不在
+    第 0 位。实测 `--limit 20` 抽出来的 20 条里 `done` 是 **0 条**，
+    而全集里它占 **41.6%**（156/375）——随机抽中 0 条的概率约十万分之三。
+
+    于是探路样本再一次给出了系统性偏差的数：它完全没测到占四成的那类动作。
+
+    所以现在**先按动作类型分层**，层内再按 session 轮流取。前者保证
+    动作分布与全集一致，后者保证同一动作的样本来自不同 session。
     """
     from collections import OrderedDict
 
-    buckets: OrderedDict[str, list] = OrderedDict()
-    for row in rows:
-        buckets.setdefault(row.get("session_id", ""), []).append(row)
+    def _round_robin(subset: list) -> list:
+        buckets: OrderedDict[str, list] = OrderedDict()
+        for row in subset:
+            buckets.setdefault(row.get("session_id", ""), []).append(row)
+        out = []
+        while buckets:
+            for key in list(buckets):
+                out.append(buckets[key].pop(0))
+                if not buckets[key]:
+                    del buckets[key]
+        return out
 
-    spread = []
-    while buckets:
-        for key in list(buckets):
-            spread.append(buckets[key].pop(0))
-            if not buckets[key]:
-                del buckets[key]
-    return spread
+    strata: OrderedDict[str, list] = OrderedDict()
+    for row in rows:
+        strata.setdefault(row.get("action", ""), []).append(row)
+
+    # 各层按比例交错：给每条样本一个 (层内序号 + 0.5) / 层大小 的位置，
+    # 再按这个位置排序。**这样取前 N 条，各动作的占比严格接近全集。**
+    #
+    # 不用「每轮各层取 k 条」那种写法——`k = max(1, ...)` 会让小层每轮
+    # 至少取 1 条，于是 `wait`（占 2.7%）在前 20 条里能拿到 2 条，
+    # 过采样 4 倍。**那仍然是系统性偏差，只是方向反了**，
+    # 而这个函数存在的全部理由就是不让探路样本给出偏差的数。
+    ranked: list[tuple[float, int, dict]] = []
+    for name, subset in strata.items():
+        ordered = _round_robin(subset)
+        size = len(ordered)
+        for i, row in enumerate(ordered):
+            ranked.append(((i + 0.5) / size, len(strata) - list(strata).index(name), row))
+    # 位置相同时按层的大小排，让大层稍占先——否则小类会挤在最前面
+    ranked.sort(key=lambda t: (t[0], -t[1]))
+    return [row for _, _, row in ranked]
 
 
 def evaluate(
@@ -309,6 +469,14 @@ def evaluate(
     out = RESULT_DIR / f"{tag}.jsonl"
 
     rows = load_val(val_path)
+    if not resume and out.exists():
+        # **`--no-resume` 必须清空文件，不能只是忽略已完成记录。**
+        # 只忽略的话新结果会追加在旧结果后面，而 `summarize` 读整个文件
+        # ——实测汇总报「样本 40」，前 20 条是用**改动前的代码**跑的，
+        # 两批混在一起，所有比例都不可用。
+        backup = out.with_suffix(".jsonl.bak")
+        out.replace(backup)
+        print(f"  --no-resume：旧结果已移到 {backup.name}，本次从零开始")
     done = _done_ids(out) if resume else set()
     todo = [r for r in rows if r["sample_id"] not in done]
     if limit:
@@ -341,7 +509,9 @@ def evaluate(
                     sample_id=row["sample_id"],
                     instruction=row["instruction"][:120],
                     truth_action=row["action"],
-                    truth_xy=list(row["point_norm"]),
+                    # **用 get 而不是下标。** 放宽后的验证集里过半样本没有坐标。
+                    truth_xy=list(row.get("point_norm") or []),
+                    truth_params=key_params(row["action"], row.get("params") or {}),
                 )
                 started = time.perf_counter()
                 try:
@@ -350,15 +520,18 @@ def evaluate(
                     record.pred_action = action
                     if point is not None:
                         record.pred_xy = [point.x, point.y]
-                        record.distance = round(math.dist(record.truth_xy, record.pred_xy), 2)
+                        if record.truth_xy:
+                            record.distance = round(math.dist(record.truth_xy, record.pred_xy), 2)
+                    record.pred_params = key_params(action, parse_params(raw), predicted=True)
                     record.action_ok = action == row["action"]
+                    record.params_ok = record.pred_params == record.truth_params
                     record.format_ok = format_compliant(raw)
                     record.parroted = parroted(raw, few_shot)
                 except Exception as exc:  # noqa: BLE001 —— 单样本失败不中断整档
                     record.error = f"{type(exc).__name__}: {exc}"[:200]
                 record.latency_ms = round((time.perf_counter() - started) * 1000, 1)
 
-                if record.action_ok and 0 <= record.distance <= DEFAULT_RADII[1]:
+                if is_hit(record, DEFAULT_RADII[1]):
                     hits += 1
                 handle.write(json.dumps(asdict(record), ensure_ascii=False) + "\n")
                 handle.flush()
@@ -393,17 +566,27 @@ def _build_predictor(
     from grounding.local_vlm import parse_point
 
     def extract(raw: str):
-        """从模型输出里抠出 (动作名, 坐标)。"""
+        """从模型输出里抠出 (动作名, 坐标)。
+
+        **`done` 不是动作，是完成信号**，输出里没有 `action` 字段
+        （`{"done": true}`）。训练集里它占 41.6%，认不出来的话这一大块
+        会全部记成「动作类型错」，而模型其实答对了。
+        """
         action = ""
         try:
             payload = json.loads(raw.strip())
             if isinstance(payload, dict):
                 action = str(payload.get("action", "")).strip()
+                if not action and payload.get("done"):
+                    action = "done"
         except (json.JSONDecodeError, TypeError):
-            for name in ("double_click", "right_click", "left_click", "mouse_move"):
-                if name in raw:
-                    action = name
-                    break
+            if '"done"' in raw and "true" in raw.lower():
+                action = "done"
+            else:
+                for name in ("double_click", "right_click", "left_click", "mouse_move"):
+                    if name in raw:
+                        action = name
+                        break
         return action, parse_point(raw)
 
     if local_model:
@@ -563,19 +746,40 @@ def summarize(path: Path, radii: tuple = DEFAULT_RADII) -> dict:
         "by_action": {},
         "median_latency_ms": 0.0,
     }
+    # **两套口径都要报，因为它们回答的不是同一个问题。**
+    #
+    #   joint        坐标类样本的命中率。分母只含带坐标的样本，
+    #                与 2026-08-26 之前的数字**同口径**，可以纵向比。
+    #   overall_hit  全部样本的命中率（坐标类看距离，其余看关键参数）。
+    #                这是放宽后的新指标，**不能和旧数并列**。
+    #
+    # 混成一个数的话，`type` / `done` 这些没有坐标的样本会把分母撑大而
+    # 分子不动，看起来像是模型退步了——而那纯粹是口径变了。
+    coord_rows = [r for r in valid if r["truth_action"] in COORD_ACTIONS]
     for radius in radii:
-        hit = sum(1 for r in with_xy if r["action_ok"] and r["distance"] <= radius)
-        stats["joint"][str(radius)] = hit / len(valid) if valid else 0.0
+        hit = sum(1 for r in coord_rows if r["action_ok"] and 0 <= r["distance"] <= radius)
+        stats["joint"][str(radius)] = hit / len(coord_rows) if coord_rows else 0.0
+    stats["coord_n"] = len(coord_rows)
+
+    def _hit(r: dict, radius: float) -> bool:
+        if not r["action_ok"]:
+            return False
+        if r["truth_action"] in COORD_ACTIONS:
+            return 0 <= r["distance"] <= radius
+        return r.get("params_ok", False)
+
+    stats["overall_hit"] = sum(1 for r in valid if _hit(r, radii[1])) / len(valid) if valid else 0.0
 
     latencies = sorted(r["latency_ms"] for r in rows if r["latency_ms"])
     if latencies:
         stats["median_latency_ms"] = latencies[len(latencies) // 2]
 
-    buckets: dict = defaultdict(lambda: {"n": 0, "action_ok": 0, "dists": []})
+    buckets: dict = defaultdict(lambda: {"n": 0, "action_ok": 0, "hit": 0, "dists": []})
     for row in valid:
         bucket = buckets[row["truth_action"]]
         bucket["n"] += 1
         bucket["action_ok"] += row["action_ok"]
+        bucket["hit"] += _hit(row, radii[1])
         if row["distance"] >= 0:
             bucket["dists"].append(row["distance"])
     for name, bucket in buckets.items():
@@ -583,8 +787,21 @@ def summarize(path: Path, radii: tuple = DEFAULT_RADII) -> dict:
         stats["by_action"][name] = {
             "n": bucket["n"],
             "action_acc": bucket["action_ok"] / bucket["n"],
+            # **命中率与类型准确率必须分开看。** 对 `type` 来说，
+            # 「知道该打字」和「打对了字」是两回事——前者是 action_acc，
+            # 后者才是 hit_rate，而本轮补 216 条 type 样本要解决的是后者。
+            "hit_rate": bucket["hit"] / bucket["n"],
             "median_distance": dists[len(dists) // 2] if dists else -1.0,
         }
+
+    # **`done` 误报率单独算。** 该继续时喊停 = 任务直接失败，比漏报更糟。
+    # 而它在训练集里占 41.6%，模型只要学会多喊 done，总体命中率就会涨——
+    # 不单独量这一项，那种退步在汇总数字上完全看不出来。
+    not_done = [r for r in valid if r["truth_action"] != "done"]
+    if not_done:
+        stats["done_false_positive"] = sum(1 for r in not_done if r["pred_action"] == "done") / len(
+            not_done
+        )
     return stats
 
 
@@ -601,16 +818,34 @@ def print_summary(stats: dict) -> None:
     if parrot:
         print(f"  **逐字照抄 few-shot 示例 {parrot:.1%}** —— 这些输出格式合规、")
         print("  坐标却是示例里的常数。格式与动作类型两个指标都拦不住它。")
-    print("  联合命中（动作类型对 且 坐标在半径内）：")
+    coord_n = stats.get("coord_n")
+    label = f"，分母 {coord_n} 条坐标类样本" if coord_n is not None else ""
+    print(f"  联合命中（动作类型对 且 坐标在半径内{label}）：")
     for radius, value in stats["joint"].items():
         print(f"    r={radius:<5}{value:>7.1%}")
+    if "overall_hit" in stats:
+        print(f"  **全量命中率 {stats['overall_hit']:.1%}**（坐标类看距离，其余看关键参数）")
+        print("  ↑ 放宽后的新指标，**与 2026-08-26 之前的数字口径不同，不可并列**。")
+        print("    上面那组 joint 才是同口径的那一列。")
+    fp = stats.get("done_false_positive")
+    if fp is not None:
+        print(f"  **done 误报率 {fp:.1%}** —— 真值不是 done 却输出了 done。")
+        print("  该继续时喊停 = 任务直接失败，比漏报更糟。训练集里 done 占 41.6%，")
+        print("  模型多喊几次总体命中率就会涨，不单独量这一项就看不出那是退步。")
     print(f"  中位延迟 {stats['median_latency_ms']:.0f}ms")
     if stats["by_action"]:
-        print(f"\n  {'真值动作':<16}{'样本':>6}{'类型准确率':>12}{'坐标误差中位数':>16}")
+        print(
+            f"\n  {'真值动作':<16}{'样本':>6}{'类型准确率':>12}{'命中率':>10}{'坐标误差中位数':>16}"
+        )
         for name, v in sorted(stats["by_action"].items(), key=lambda kv: -kv[1]["n"]):
-            print(f"  {name:<16}{v['n']:>6}{v['action_acc']:>12.1%}{v['median_distance']:>16.1f}")
-        print("\n  **按动作类型分开看。** 训练集里 left_click 占 75.9%，")
-        print("  只报总体准确率会被它主导——全输出 left_click 就能拿 76%。")
+            dist = f"{v['median_distance']:.1f}" if v["median_distance"] >= 0 else "—"
+            print(
+                f"  {name:<16}{v['n']:>6}{v['action_acc']:>12.1%}"
+                f"{v.get('hit_rate', 0):>10.1%}{dist:>16}"
+            )
+        print("\n  **按动作类型分开看，且类型准确率与命中率要分开。**")
+        print("  验证集里 done 占 41.6%，只报总体会被它主导；而对 type 来说，")
+        print("  「知道该打字」（类型准确率）和「打对了字」（命中率）是两回事。")
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -285,7 +285,7 @@ class TestBuildRecord:
             assert back["params"] == want_params
 
     def test_图片路径一律用正斜杠(self):
-        """**Windows 上生成的训练集要能拿到 Linux 服务器上跑。**
+        r"""**Windows 上生成的训练集要能拿到 Linux 服务器上跑。**
 
         `data\raw\...` 在 Linux 上不是路径，是一个含反斜杠的文件名——
         图片一张都打不开，而报错指向「文件不存在」，离根因很远。
@@ -329,3 +329,135 @@ class TestParsePoint:
         而那两种失败的修法完全不同。
         """
         assert parse_point('{"x": -5, "y": 10}') == Point(-5, 10)
+
+
+class TestPromptDataContract:
+    """**动作空间是提示词与数据之间的契约。**
+
+    2026-08-26 的事故：训练数据从 3 种动作放宽到 8 种，`SYSTEM_PROMPT`
+    没跟着改，仍然只列四个鼠标动作并要求「必须输出 x/y」。于是 88 分钟的
+    训练是在**提示词与七成目标直接矛盾**的条件下做的——
+
+        提示词说     只有 4 个鼠标动作，必须给 x/y
+        训练目标却是  {"done": true}          占 41.6%
+                     {"action":"type",...}    占 12.3%
+
+    后果实测：`done` 8 条全错、误报率 0.0%（提示词从没说过它存在）。
+    **两边都不报错，loss 曲线完全正常。**
+
+    这是同一根源的第三次（前两次：`data.split` 的坐标过滤、`eval.action`
+    的动作集合），所以这条契约必须由测试守着。
+    """
+
+    def _prompt(self) -> str:
+        from finetune.train_lora import SYSTEM_PROMPT
+
+        return SYSTEM_PROMPT
+
+    def test_提示词列全了数据里会出现的动作(self):
+        """凡是 `finetune.dataset` 会生成的动作，提示词里都要有。"""
+        from finetune.dataset import ANSWER_FIELDS
+
+        prompt = self._prompt()
+        missing = [name for name in ANSWER_FIELDS if name not in prompt]
+        assert not missing, f"这些动作会出现在训练目标里，但提示词没提：{missing}"
+
+    def test_提示词说明了_done(self):
+        """`done` 占验证集 41.6%，提示词不提它，模型就没有理由输出它。"""
+        prompt = self._prompt()
+        assert '"done"' in prompt or "done" in prompt
+
+    def test_提示词给出的键名与训练目标一致(self):
+        """**键名对不上，模型学的就是提示词里那个用不了的名字。**
+
+        `key` 动作的输出键是 `keys`（复数），而装载器存的是 `key`（单数）
+        ——这两套词表混用过一次，导致命中率恒为 0。
+        """
+        from finetune.dataset import ANSWER_FIELDS
+
+        prompt = self._prompt()
+        for action, fields in ANSWER_FIELDS.items():
+            for out_key, _ in fields:
+                assert f'"{out_key}"' in prompt, f"{action} 的输出键 {out_key} 没在提示词里出现"
+
+    def test_不再无条件要求坐标(self):
+        """`type` / `key` / `done` 没有坐标。提示词若说「必须输出 x/y」，
+        就是在要求模型做一件对七成样本不成立的事。
+        """
+        squashed = "".join(self._prompt().split())
+        assert "只输出一个JSON对象" in squashed or "只输出一个 JSON 对象" in self._prompt()
+        # 旧提示词的那句模板：{"action": "动作名", "x": …, "y": …}
+        assert '"动作名"' not in self._prompt(), "还留着「一个模板套所有动作」的旧写法"
+
+    def test_评测器认得所有训练动作(self):
+        """评测侧的 `ALLOWED_ACTIONS` 也要跟上，否则合规率会凭空低一截。
+
+        实测：`--limit 20` 报格式合规率 70%，正好等于 20 条里坐标类的 14 条
+        ——非坐标输出被全判为不合规，而它们其实完全合规。
+        """
+        from eval.action import ALLOWED_ACTIONS
+        from finetune.dataset import ANSWER_FIELDS
+
+        missing = set(ANSWER_FIELDS) - set(ALLOWED_ACTIONS)
+        assert not missing, f"评测器不认这些动作：{missing}"
+
+    def test_真值与预测的参数词表不混用(self):
+        """`key` 的真值键是 `key`，模型输出的键是 `keys`。
+
+        混用过一次：5 条 key 样本类型准确率 100%、命中率 0%——真值侧按
+        `keys` 去取，取到空，于是永远和预测对不上。
+        """
+        from eval.action import key_params
+
+        truth = key_params("key", {"key": "Enter"})
+        pred = key_params("key", {"keys": "enter"}, predicted=True)
+        assert truth and truth == pred, f"真值 {truth} 与预测 {pred} 应当相等"
+
+
+class TestLabelMasking:
+    """**标签掩码错了不报错，loss 曲线照样好看，模型学的却是别的东西。**
+
+    2026-08-26 实测出的 bug：原来按「留最后 len(answer) 个 token」掩码，
+    而 chat template 会在答案后追加结束符与换行，于是窗口整体后移——
+
+        期望训练  {"action": "left_click", "x": 475, "y": 251}
+        实际训练  ": "left_click", "x": 475, "y": 251}<|im_end|>…
+                  ↑ 开头的 {"action 被当成上下文遮掉了
+
+    旧数据没暴露它：答案 23 个 token，丢开头 3 个还剩动作名和坐标。
+    **答案越短损失比例越大**——`{"done": true}` 只有 5 个 token，
+    丢 3 个就是六成信号，模型从没被训练过输出 `{"done"` 这个开头。
+    这解释了放宽后 done 8 条全错、误报率 0.0%。
+    """
+
+    def test_定位函数取最后一次出现(self):
+        """多轮对话里 assistant 会出现多次，要的是最后那一轮。"""
+        from finetune.train_lora import _last_subsequence_end
+
+        assert _last_subsequence_end([1, 2, 3, 1, 2, 9], [1, 2]) == 5
+        assert _last_subsequence_end([1, 2, 3], [9]) is None
+        assert _last_subsequence_end([1], [1, 2]) is None
+        assert _last_subsequence_end([1, 2], []) is None
+
+    def test_掩码按_assistant_起始而不是答案长度(self):
+        """钉住实现：**按长度倒推就是那个 bug 本身。**"""
+        import inspect
+
+        from finetune.train_lora import train
+
+        src = inspect.getsource(train)
+        assert "_last_subsequence_end" in src
+        assert "labels.shape[1] - keep" not in src, "又退回按答案长度倒推了"
+
+    def test_找不到起始标记时整条屏蔽(self):
+        """**宁可这条样本不产生梯度，也不要用一个偏移的窗口训练。**
+
+        后者不报错，只会安静地学错东西。
+        """
+        import inspect
+
+        from finetune.train_lora import train
+
+        src = inspect.getsource(train)
+        index = src.index("if start is None")
+        assert "labels[index, :] = -100" in src[index : index + 400]

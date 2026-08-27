@@ -100,10 +100,23 @@ def _own_console_handle() -> int:
         return 0
 
 
-def check_window_title(pattern: str, regex: bool = False) -> CheckResult:
-    """存在标题匹配的窗口。
+def check_window_title(pattern: str, regex: bool = False, should_match: bool = True) -> CheckResult:
+    """存在（或不存在）标题匹配的窗口。
 
-        **遍历所有顶层窗口，不只看前台。** 只看前台会让判定受「任务结束时
+    ``should_match=False`` 是给**起点检查**用的。另外三个判据早就有反方向
+    （`should_run` / `should_contain` / `should_exist`），只有这个缺——
+    而 M2 的假成功**全部**来自起点没清干净：判据一上来就满足，Agent 什么
+    都没做也打勾。
+
+    两类任务非它不可：
+
+        「打开系统设置」   判据是窗口标题含「设置」，起点就得是没有这个窗口。
+                          不能用进程判据——SystemSettings.exe 在 Windows 11
+                          上常驻后台（挂起态），进程判据恒为真。
+        「显示桌面」       判据是某窗口不再可见。最小化不杀进程，
+                          只有窗口判据看得出来。
+
+    **遍历所有顶层窗口，不只看前台。** 只看前台会让判定受「任务结束时
         恰好哪个窗口在最上面」影响——那是与任务成败无关的噪声。
 
         **但要跳过评测脚本自己的控制台窗口。** 这是实测踩出来的：
@@ -146,10 +159,19 @@ def check_window_title(pattern: str, regex: bool = False) -> CheckResult:
         low = pattern.lower()
         hit = next((t for t in titles if low in t.lower()), "")
 
-    if hit:
-        return CheckResult(True, f"窗口标题命中 {hit!r}", "window_title")
     sample = "、".join(titles[:5]) or "（无）"
-    return CheckResult(False, f"没有标题含 {pattern!r} 的窗口。当前窗口：{sample}", "window_title")
+    if bool(hit) == should_match:
+        if should_match:
+            return CheckResult(True, f"窗口标题命中 {hit!r}", "window_title")
+        return CheckResult(True, f"没有标题含 {pattern!r} 的窗口，符合预期", "window_title")
+
+    # 失败的说法要跟着方向变：要求「有」而没有，与要求「没有」却有，
+    # 是两种完全不同的故障，报同一句话会把排查引到反方向去。
+    if should_match:
+        return CheckResult(
+            False, f"没有标题含 {pattern!r} 的窗口。当前窗口：{sample}", "window_title"
+        )
+    return CheckResult(False, f"不该存在的窗口仍在：{hit!r}", "window_title")
 
 
 def check_file_contains(
