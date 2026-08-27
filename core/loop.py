@@ -41,6 +41,7 @@ from dataclasses import dataclass, field
 
 from control.actions import ActionValidationError
 from control.executor import ActionExecutor
+from core.reflector import Reflector
 from core.retry import RetryPolicy
 from core.trajectory import LatencyBreakdown, StepRecord, TrajectoryWriter
 from grounding.base import GroundingBackend, GroundingResult
@@ -97,6 +98,20 @@ class LoopConfig:
     #: 变化像素占比超过它算"屏幕动了"。见 `perception.change` 的模块文档
     #: ——这个阈值是拍的，不是测的。
     change_threshold: float = 0.01
+
+    #: 模型报 `done` 时先做级联判定，无依据就否决。M4 任务 1 / 大纲 W6。
+    #: 见 `agent/reflector.py` 与 `docs/m4-错误分类体系.md`。
+    #:
+    #: **默认关闭，理由与 `escalate_on_no_change` 相同**：打开会改变行为，
+    #: 而 M2/M3 的全部实测都是在关闭下跑的。默认打开等于让那些复现命令
+    #: 悄悄跑出另一套结果。
+    #:
+    #: **打开它会自动启用帧差** —— 级联 1 就是帧差，没有帧差 Reflector
+    #: 只能一路 `unknown`，等于没开。
+    reflector: bool = False
+
+    #: 同一子任务里 Reflector 最多连续否决几次。到上限接受，交程序化判定兜底。
+    reflector_max_rejects: int = 2
 
     def __post_init__(self) -> None:
         if self.max_iterations < 1:
@@ -205,6 +220,9 @@ class AgentLoop:
         #: 重试策略。每个子任务开始时 reset——不重置的话，上个子任务在同一
         #: 坐标上的尝试会让这个子任务的第一次点击就被升级。
         self.retry_policy = RetryPolicy()
+        self.reflector = Reflector(max_rejects=self.config.reflector_max_rejects)
+        #: Reflector 否决后要回传给模型的话。只带一轮，用完即清。
+        self._reflector_hint = ""
 
         #: 每步落盘后触发，CLI 用它刷新实时面板。
         #: 回调抛异常不影响任务——显示层的问题不该把正在执行的任务带崩
@@ -220,6 +238,8 @@ class AgentLoop:
         """
         result = LoopResult()
         self.retry_policy.reset()
+        self.reflector.reset()
+        self._reflector_hint = ""
         logger.info("子任务 #%d 开始：%s", subtask_id, subtask)
 
         for iteration in range(1, self.config.max_iterations + 1):
@@ -307,11 +327,18 @@ class AgentLoop:
         # 重复率 75.3% 就是这么来的。所以把"上一次点了没反应"写进这一轮
         # 的子任务描述里，让它自己换目标。
         asked = subtask
+        hints: list[str] = []
         if self.config.escalate_on_no_change:
             hint = self.retry_policy.hint()
             if hint:
-                asked = subtask + "\n\n" + hint
-                record.meta["hint"] = hint
+                hints.append(hint)
+        if self._reflector_hint:
+            hints.append(self._reflector_hint)
+            self._reflector_hint = ""  # 只回传一轮，不累积
+        if hints:
+            joined = "\n\n".join(hints)
+            asked = subtask + "\n\n" + joined
+            record.meta["hint"] = joined
         try:
             intent, retries = self._predict(asked, before)
         except LLMBackendError as exc:
@@ -330,8 +357,20 @@ class AgentLoop:
         record.cost_cny = intent.cost_cny
 
         # --- 3. 模型自报完成 ---
+        # **不打开 Reflector 时，这里与 M2/M3 实测时一字不差。**
         if intent.done:
             record.execution_status = "no_action"
+            if self.config.reflector:
+                verdict = self.reflector.judge()
+                record.meta["reflector"] = verdict.as_dict()
+                if verdict.rejected:
+                    # 否决：不结束子任务，让循环进下一轮。反馈通过
+                    # `_reflector_hint` 写进下一轮的子任务描述 —— 只改动作
+                    # 类型改不了模型的判断，探针实测坐标重复率 75.3%。
+                    self._reflector_hint = verdict.hint
+                    logger.info("步骤 %d：%s", step_index, verdict.reason)
+                    record.latency = latency.as_dict()
+                    return self._commit(record), None
             record.latency = latency.as_dict()
             return self._commit(record), (STOP_DONE, intent.thinking or "模型报告子任务完成")
 
@@ -406,17 +445,23 @@ class AgentLoop:
             record.screenshot_after = self._save_frame(after, step_index, "after")
 
         # --- 7.5 这一步到底有没有用 ---
-        if self.config.escalate_on_no_change:
+        # **两个开关共用这一次帧差。** Reflector 的级联 1 就是帧差，
+        # 重复算一次纯属浪费；分别算还可能因为取帧时机不同得出不同结论。
+        if self.config.escalate_on_no_change or self.config.reflector:
             from perception.change import compare
 
             report = compare(before, after, self.config.change_threshold)
             record.meta["change"] = report.as_dict()
-            self.retry_policy.observe(
-                action.type.value,
-                getattr(action, "x", None),
-                getattr(action, "y", None),
-                changed=report.changed if after is not None else None,
-            )
+            changed = report.changed if after is not None else None
+            if self.config.escalate_on_no_change:
+                self.retry_policy.observe(
+                    action.type.value,
+                    getattr(action, "x", None),
+                    getattr(action, "y", None),
+                    changed=changed,
+                )
+            if self.config.reflector:
+                self.reflector.observe(changed=changed)
 
         record.latency = latency.as_dict()
         self._push_history(action, intent.thinking, after or before, outcome)

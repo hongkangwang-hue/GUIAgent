@@ -146,6 +146,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="给这次跑起个名字，进存档文件名与 JSON。对比实验必填，例如 base / lora",
     )
     parser.add_argument(
+        "--reflector",
+        action="store_true",
+        help="模型报 done 时先做级联判定，上一步没让屏幕变就否决并要求重试。"
+        "M4 任务 1 / 大纲 W6。**默认关闭**——打开会改变行为，"
+        "而 M2/M3 的实测都是关着跑的。打开会自动启用帧差。"
+        "实测依据见 docs/m4-错误分类体系.md：94.4%% 的子任务在 0~1 个动作后就报完成",
+    )
+    parser.add_argument(
         "--escalate-on-no-change",
         action="store_true",
         help="动作执行后屏幕没变化时自动升级策略(单击→双击),并把「上一次点了没反应」"
@@ -314,6 +322,7 @@ def main() -> int:
                     loop=LoopConfig(
                         max_iterations=max_steps,
                         escalate_on_no_change=args.escalate_on_no_change,
+                        reflector=args.reflector,
                     ),
                     executor_template=args.executor_template,
                     planner_template=args.planner_template,
@@ -442,6 +451,7 @@ def archive_payload(
             "executor_template": args.executor_template,
             "planner_template": args.planner_template,
             "escalate_on_no_change": args.escalate_on_no_change,
+            "reflector": args.reflector,
             # 动作集也进存档——同 executor_template,它能左右结论。
             "allowed_actions": [x.strip() for x in args.allowed_actions.split(",") if x.strip()],
             # **屏幕设置也必须进存档。** 同一天查出报告写错了客机分辨率

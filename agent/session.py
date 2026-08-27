@@ -131,6 +131,8 @@ class SessionConfig:
             # 实际生效的那个值——这是本项目栽过两次的形态（提示词模板、
             # 屏幕分辨率）。
             "escalate_on_no_change": self.loop.escalate_on_no_change,
+            "reflector": self.loop.reflector,
+            "reflector_max_rejects": self.loop.reflector_max_rejects,
             "coordinate_space": list(self.coordinate_space),
             "max_iterations": self.loop.max_iterations,
             "cost_limit_cny": self.loop.cost_limit_cny,
