@@ -165,6 +165,34 @@ MAX_PIXELS = DEFAULT_MAX_PIXELS
 LOCAL_PRICE = PriceSheet(model=DEFAULT_MODEL, input_per_1k=0.0, output_per_1k=0.0)
 
 
+def _executor_action_names() -> frozenset[str]:
+    """executor 提示词实际给出的动作名，现场从 ACTION_SPECS 读。
+
+    **不要手抄一份清单。** 本项目已经因为「为旧目标写的东西在目标变了之后
+    不报错地活下来」废掉过一轮训练（`SYSTEM_PROMPT` 只列 4 个鼠标动作），
+    以及本函数替换掉的那条警告——它把旧 adapter 的 4 个动作一直报到了
+    动作空间放宽之后。写死的清单不会报错，只会静默说谎。
+    """
+    from control.actions import ACTION_SPECS
+
+    return frozenset(getattr(a, "value", str(a)) for a in ACTION_SPECS)
+
+
+def _trained_action_names() -> frozenset[str]:
+    """训练提示词里出现的动作名，现场从 `finetune.train_lora` 的常量读。"""
+    import re
+
+    from finetune.train_lora import SYSTEM_PROMPT
+
+    return frozenset(re.findall(r'"action":\s*"(\w+)"', SYSTEM_PROMPT)) | (
+        {"done"} if '"done"' in SYSTEM_PROMPT else set()
+    )
+
+
+_EXECUTOR_ACTIONS = _executor_action_names()
+_TRAINED_ACTIONS = _trained_action_names()
+
+
 class QwenVLLocalBackend(LLMBackend):
     """在本机 GPU 上跑 Qwen2.5-VL，可选挂载 QLoRA adapter。
 
@@ -216,11 +244,15 @@ class QwenVLLocalBackend(LLMBackend):
 
         if adapter and not pin_prompt:
             logger.warning(
-                "已挂载 adapter %s：训练时的动作空间只有 left_click / double_click / "
-                "right_click / mouse_move，比 executor 提示词窄，接进来属于分布外。"
+                "已挂载 adapter %s：训练动作空间 %d 个（%s），"
+                "executor 提示词 %d 个，差 %s —— 这几个未训练过，属于分布外。"
                 "实测该模型仍会输出 done 与 thinking（见模块文档），但分布外的部分"
                 "一律以实测为准，不要按推测写进报告。",
                 adapter,
+                len(_TRAINED_ACTIONS),
+                " / ".join(sorted(_TRAINED_ACTIONS)),
+                len(_EXECUTOR_ACTIONS),
+                " / ".join(sorted(_EXECUTOR_ACTIONS - _TRAINED_ACTIONS)) or "无",
             )
 
         #: 权重延迟到第一次调用才加载。构造一个后端只为打印配置时
