@@ -62,3 +62,8 @@ finetune/outputs/
 # 提交一次仓库就再也瘦不回来了。
 delivery/*.zip
 gui-agent-train.zip
+
+# letterbox 实验的中间图片：254MB，由 scripts/make_letterbox_val.py 可重建
+data/letterbox-16x9/
+finetune/data/val-16x9*.jsonl
+finetune/data/val-4x3-coords.jsonl
