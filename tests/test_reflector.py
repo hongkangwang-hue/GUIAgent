@@ -178,3 +178,43 @@ class TestArgparse帮助字符串:
         text = build_parser().format_help()
         assert "--reflector" in text
         assert "--escalate-on-no-change" in text
+
+
+class TestVerifyDelay:
+    """`--verify-delay` 是 §7.5 判决性实验的工具，不是普通调参。
+
+    Reflector 打开后成功率 20% → 40%，但**纠错率实测为 0%**：57 次否决里
+    94.7% 被模型原样再报一次 `done`，真动作数一个没涨
+    （`send_message` 反而 17 → 13）。多出来的 43 步只贡献了耗时。
+
+    这个参数让「不开 Reflector + 补等量延时」可跑，从而分辨那 20 个百分点
+    是纠错还是计时假象。**默认 0，不影响任何历史复现命令。**
+    """
+
+    def test_默认为零(self):
+        from scripts.run_basic_tasks import build_parser
+
+        assert build_parser().parse_args([]).verify_delay == 0.0
+
+    def test_可设置(self):
+        from scripts.run_basic_tasks import build_parser
+
+        assert build_parser().parse_args(["--verify-delay", "12"]).verify_delay == 12.0
+
+    def test_叠加在固定的一点五秒之上(self):
+        """固定的 1.5 秒是历史行为，不能被这个参数取代——取代了就改变了基线。"""
+        import inspect
+
+        from scripts import run_basic_tasks
+
+        src = inspect.getsource(run_basic_tasks)
+        assert "time.sleep(1.5 + args.verify_delay)" in src
+
+    def test_进存档(self):
+        """开关状态必须进存档，否则事后分不清哪批数据是哪个配置跑的。"""
+        import inspect
+
+        from scripts import run_basic_tasks
+
+        src = inspect.getsource(run_basic_tasks)
+        assert '"verify_delay": args.verify_delay' in src

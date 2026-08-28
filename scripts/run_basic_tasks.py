@@ -146,6 +146,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="给这次跑起个名字，进存档文件名与 JSON。对比实验必填，例如 base / lora",
     )
     parser.add_argument(
+        "--verify-delay",
+        type=float,
+        default=0.0,
+        help="程序化判定之前额外等待的秒数，叠加在固定的 1.5 秒之上。"
+        "**判决性实验专用**：Reflector 打开后每个子任务多出的重复 done "
+        "只贡献耗时不贡献动作，用这个参数在不开 Reflector 时补上等量延时，"
+        "就能分辨那 20 个百分点是纠错还是计时假象。见 docs/m4-错误分类体系.md 7.5",
+    )
+    parser.add_argument(
         "--guest-snapshot",
         default="",
         help="本轮从哪个客机快照起跑，原样记进存档。"
@@ -390,7 +399,15 @@ def main() -> int:
 
             # **判定必须在 reset 之前、执行之后。** 顺序错了就什么都查不到。
             if args.execute:
-                time.sleep(1.5)  # 等界面稳定，避免拿到中间态
+                # 等界面稳定，避免拿到中间态。
+                #
+                # **`--verify-delay` 是给判决性实验用的**，见
+                # `docs/m4-错误分类体系.md` §7.5：Reflector 打开后成功率
+                # 20% → 40%，但纠错率实测为 0%，多出来的 43 步全是重复的
+                # `done`，只贡献了耗时（close_app +7.8s / send_message +15.1s）。
+                # 用这个参数在**不开 Reflector** 的情况下补上等量延时，
+                # 就能判断那 20 个百分点到底是纠错还是计时假象。
+                time.sleep(1.5 + args.verify_delay)
                 record.verified, record.verify_detail = check.run()
             else:
                 # 演练也把判据跑一遍，但**不计入成功**。
@@ -468,6 +485,7 @@ def archive_payload(
             "planner_template": args.planner_template,
             "escalate_on_no_change": args.escalate_on_no_change,
             "reflector": args.reflector,
+            "verify_delay": args.verify_delay,
             # 动作集也进存档——同 executor_template,它能左右结论。
             "allowed_actions": [x.strip() for x in args.allowed_actions.split(",") if x.strip()],
             # **屏幕设置也必须进存档。** 同一天查出报告写错了客机分辨率

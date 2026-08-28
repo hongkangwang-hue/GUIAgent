@@ -67,3 +67,7 @@ gui-agent-train.zip
 data/letterbox-16x9/
 finetune/data/val-16x9*.jsonl
 finetune/data/val-4x3-coords.jsonl
+
+# upscale 实验的中间图片：由 scripts/make_upscaled_val.py 可重建
+data/upscaled-0622/
+finetune/data/val-upscaled-coords.jsonl
